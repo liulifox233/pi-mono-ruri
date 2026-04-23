@@ -257,6 +257,101 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("path APIs", () => {
+		it("supports scoped get/set/unset with effective merge", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			manager.setScopedValue("global", "compaction.enabled", false);
+			manager.setScopedValue("project", "compaction.keepRecentTokens", 1234);
+			await manager.flush();
+
+			expect(manager.getScopedValue("global", "compaction.enabled")).toBe(false);
+			expect(manager.getScopedValue("project", "compaction.keepRecentTokens")).toBe(1234);
+			expect(manager.getEffectiveValue("compaction.enabled")).toBe(false);
+			expect(manager.getEffectiveValue("compaction.keepRecentTokens")).toBe(1234);
+			expect(manager.hasScopedValue("project", "compaction.keepRecentTokens")).toBe(true);
+
+			manager.unsetScopedValue("project", "compaction.keepRecentTokens");
+			await manager.flush();
+
+			expect(manager.hasScopedValue("project", "compaction.keepRecentTokens")).toBe(false);
+			expect(manager.getEffectiveValue("compaction.keepRecentTokens")).toBeUndefined();
+		});
+
+		it("preserves external sibling edits when updating nested paths", async () => {
+			const projectSettingsPath = join(projectDir, ".pi", "settings.json");
+			writeFileSync(
+				projectSettingsPath,
+				JSON.stringify({
+					terminal: {
+						showImages: true,
+						imageWidthCells: 60,
+					},
+				}),
+			);
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			writeFileSync(
+				projectSettingsPath,
+				JSON.stringify({
+					terminal: {
+						showImages: true,
+						imageWidthCells: 120,
+					},
+				}),
+			);
+
+			manager.setScopedValue("project", "terminal.showImages", false);
+			await manager.flush();
+
+			const savedSettings = JSON.parse(readFileSync(projectSettingsPath, "utf-8"));
+			expect(savedSettings.terminal).toEqual({
+				showImages: false,
+				imageWidthCells: 120,
+			});
+		});
+
+		it("preserves deep sibling edits when unsetting nested extension paths", async () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(
+				settingsPath,
+				JSON.stringify({
+					extensions: {
+						demo: {
+							providerMode: "safe",
+							providerThinkingEffort: "medium",
+						},
+					},
+				}),
+			);
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			writeFileSync(
+				settingsPath,
+				JSON.stringify({
+					extensions: {
+						demo: {
+							providerMode: "fast",
+							providerThinkingEffort: "medium",
+						},
+					},
+				}),
+			);
+
+			manager.unsetScopedValue("global", "extensions.demo.providerThinkingEffort");
+			await manager.flush();
+
+			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+			expect(savedSettings.extensions).toEqual({
+				demo: {
+					providerMode: "fast",
+				},
+			});
+		});
+	});
+
 	describe("shellCommandPrefix", () => {
 		it("should load shellCommandPrefix from settings", () => {
 			const settingsPath = join(agentDir, "settings.json");

@@ -1,16 +1,24 @@
-import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
-import type { Transport } from "@mariozechner/pi-ai";
 import {
 	Container,
-	getCapabilities,
+	getKeybindings,
+	Input,
 	type SelectItem,
 	SelectList,
 	type SelectListLayoutOptions,
 	type SettingItem,
 	SettingsList,
+	type SettingsListTheme,
 	Spacer,
 	Text,
 } from "@mariozechner/pi-tui";
+import type { SettingsScope } from "../../../core/settings-manager.js";
+import type {
+	ResolvedSettingNode,
+	ResolvedSettingsSection,
+	SettingsRegistry,
+	SettingsRuntimeContext,
+	SettingValue,
+} from "../../../core/settings-registry.js";
 import { getSelectListTheme, getSettingsListTheme, theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 
@@ -18,128 +26,170 @@ const SETTINGS_SUBMENU_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 	minPrimaryColumnWidth: 12,
 	maxPrimaryColumnWidth: 32,
 };
+const RESET_SETTING_VALUE = "__unset";
+const INVALID_NUMBER_ERROR = "Enter a valid finite number.";
 
-const THINKING_DESCRIPTIONS: Record<ThinkingLevel, string> = {
-	off: "No reasoning",
-	minimal: "Very brief reasoning (~1k tokens)",
-	low: "Light reasoning (~2k tokens)",
-	medium: "Moderate reasoning (~8k tokens)",
-	high: "Deep reasoning (~16k tokens)",
-	xhigh: "Maximum reasoning (~32k tokens)",
-};
+type ParsedSettingValue = { ok: true; value: SettingValue } | { ok: false; error: string };
 
-export interface SettingsConfig {
-	autoCompact: boolean;
-	showImages: boolean;
-	imageWidthCells: number;
-	autoResizeImages: boolean;
-	blockImages: boolean;
-	enableSkillCommands: boolean;
-	steeringMode: "all" | "one-at-a-time";
-	followUpMode: "all" | "one-at-a-time";
-	transport: Transport;
-	thinkingLevel: ThinkingLevel;
-	availableThinkingLevels: ThinkingLevel[];
-	currentTheme: string;
-	availableThemes: string[];
-	hideThinkingBlock: boolean;
-	collapseChangelog: boolean;
-	enableInstallTelemetry: boolean;
-	doubleEscapeAction: "fork" | "tree" | "none";
-	treeFilterMode: "default" | "no-tools" | "user-only" | "labeled-only" | "all";
-	showHardwareCursor: boolean;
-	editorPaddingX: number;
-	autocompleteMaxVisible: number;
-	quietStartup: boolean;
-	clearOnShrink: boolean;
-	showTerminalProgress: boolean;
+function isSelfEditableNode(node: ResolvedSettingNode): boolean {
+	return node.type === "text" || (node.type === "number" && node.options.length === 0);
 }
 
-export interface SettingsCallbacks {
-	onAutoCompactChange: (enabled: boolean) => void;
-	onShowImagesChange: (enabled: boolean) => void;
-	onImageWidthCellsChange: (width: number) => void;
-	onAutoResizeImagesChange: (enabled: boolean) => void;
-	onBlockImagesChange: (blocked: boolean) => void;
-	onEnableSkillCommandsChange: (enabled: boolean) => void;
-	onSteeringModeChange: (mode: "all" | "one-at-a-time") => void;
-	onFollowUpModeChange: (mode: "all" | "one-at-a-time") => void;
-	onTransportChange: (transport: Transport) => void;
-	onThinkingLevelChange: (level: ThinkingLevel) => void;
-	onThemeChange: (theme: string) => void;
-	onThemePreview?: (theme: string) => void;
-	onHideThinkingBlockChange: (hidden: boolean) => void;
-	onCollapseChangelogChange: (collapsed: boolean) => void;
-	onEnableInstallTelemetryChange: (enabled: boolean) => void;
-	onDoubleEscapeActionChange: (action: "fork" | "tree" | "none") => void;
-	onTreeFilterModeChange: (mode: "default" | "no-tools" | "user-only" | "labeled-only" | "all") => void;
-	onShowHardwareCursorChange: (enabled: boolean) => void;
-	onEditorPaddingXChange: (padding: number) => void;
-	onAutocompleteMaxVisibleChange: (maxVisible: number) => void;
-	onQuietStartupChange: (enabled: boolean) => void;
-	onClearOnShrinkChange: (enabled: boolean) => void;
-	onShowTerminalProgressChange: (enabled: boolean) => void;
-	onCancel: () => void;
+function hasDetailSelfItem(node: ResolvedSettingNode): boolean {
+	return isSelfEditableNode(node) || node.type === "toggle" || node.options.length > 0;
 }
 
-/**
- * A submenu component for selecting from a list of options.
- */
-class SelectSubmenu extends Container {
-	private selectList: SelectList;
+function formatSettingValue(node: ResolvedSettingNode): string {
+	const value = node.currentValue;
+	let rendered = typeof value === "boolean" ? (value ? "On" : "Off") : value === undefined ? "Unset" : String(value);
+	if (node.inherited) {
+		rendered += " (inherited)";
+	}
+	return rendered;
+}
+
+function stringifyForInput(value: SettingValue | undefined): string {
+	if (value === undefined) return "";
+	return String(value);
+}
+
+function parseSettingValue(node: ResolvedSettingNode, raw: string): ParsedSettingValue {
+	if (node.type === "toggle") {
+		return { ok: true, value: raw === "true" };
+	}
+	if (node.type === "number") {
+		const trimmed = raw.trim();
+		if (!trimmed) {
+			return { ok: false, error: INVALID_NUMBER_ERROR };
+		}
+		const value = Number(trimmed);
+		if (!Number.isFinite(value)) {
+			return { ok: false, error: INVALID_NUMBER_ERROR };
+		}
+		return { ok: true, value };
+	}
+	return { ok: true, value: raw };
+}
+
+function toChoiceItems(node: ResolvedSettingNode): SelectItem[] {
+	if (node.type === "toggle") {
+		return [
+			{ value: "true", label: "On" },
+			{ value: "false", label: "Off" },
+		];
+	}
+	return node.options.map((option) => ({
+		value: option.value,
+		label: option.label ?? option.value,
+		description: option.description,
+	}));
+}
+
+function canUnsetNode(
+	node: ResolvedSettingNode,
+	registry: SettingsRegistry,
+	scope: SettingsScope,
+	runtimeContext: SettingsRuntimeContext,
+): boolean {
+	return scope === "project"
+		? node.scopedValue !== undefined
+		: registry.hasScopedValue(node.id, "global", runtimeContext);
+}
+
+function buildChoiceItems(node: ResolvedSettingNode, allowUnset: boolean): SelectItem[] {
+	const items = toChoiceItems(node);
+	if (allowUnset) {
+		items.push({
+			value: RESET_SETTING_VALUE,
+			label: "Reset current scope",
+			description: "Remove the value from the current scope.",
+		});
+	}
+	return items;
+}
+
+function applySettingSelection(
+	registry: SettingsRegistry,
+	node: ResolvedSettingNode,
+	scope: SettingsScope,
+	runtimeContext: SettingsRuntimeContext,
+	value: string,
+): string | undefined {
+	if (value === RESET_SETTING_VALUE) {
+		registry.unset(node.id, scope, runtimeContext);
+		return undefined;
+	}
+	const parsed = parseSettingValue(node, value);
+	if (!parsed.ok) {
+		return parsed.error;
+	}
+	registry.apply(node.id, parsed.value, scope, runtimeContext);
+	return undefined;
+}
+
+class ValueEditorComponent extends Container {
+	private readonly input: Input;
+	private readonly errorText: Text;
+
+	constructor(node: ResolvedSettingNode, onSubmit: (value: string) => string | undefined, onCancel: () => void) {
+		super();
+		this.addChild(new Text(theme.bold(theme.fg("accent", node.label)), 0, 0));
+		if (node.description) {
+			this.addChild(new Spacer(1));
+			this.addChild(new Text(theme.fg("muted", node.description), 0, 0));
+		}
+		this.addChild(new Spacer(1));
+		this.input = new Input();
+		this.input.setValue(stringifyForInput(node.currentValue));
+		this.input.onSubmit = (value) => {
+			const error = onSubmit(value);
+			this.errorText.setText(error ? theme.fg("error", error) : "");
+		};
+		this.input.onEscape = onCancel;
+		this.addChild(this.input);
+		this.addChild(new Spacer(1));
+		this.errorText = new Text("", 0, 0);
+		this.addChild(this.errorText);
+		this.addChild(new Spacer(1));
+		this.addChild(new Text(theme.fg("dim", "  Enter to save · Esc to go back"), 0, 0));
+	}
+
+	handleInput(data: string): void {
+		this.input.handleInput(data);
+	}
+}
+
+class ChoiceEditorComponent extends Container {
+	private readonly selectList: SelectList;
 
 	constructor(
 		title: string,
-		description: string,
-		options: SelectItem[],
+		description: string | undefined,
+		items: SelectItem[],
 		currentValue: string,
 		onSelect: (value: string) => void,
 		onCancel: () => void,
-		onSelectionChange?: (value: string) => void,
 	) {
 		super();
-
-		// Title
 		this.addChild(new Text(theme.bold(theme.fg("accent", title)), 0, 0));
-
-		// Description
 		if (description) {
 			this.addChild(new Spacer(1));
 			this.addChild(new Text(theme.fg("muted", description), 0, 0));
 		}
-
-		// Spacer
 		this.addChild(new Spacer(1));
-
-		// Select list
 		this.selectList = new SelectList(
-			options,
-			Math.min(options.length, 10),
+			items,
+			Math.min(items.length, 10),
 			getSelectListTheme(),
 			SETTINGS_SUBMENU_SELECT_LIST_LAYOUT,
 		);
-
-		// Pre-select current value
-		const currentIndex = options.findIndex((o) => o.value === currentValue);
-		if (currentIndex !== -1) {
-			this.selectList.setSelectedIndex(currentIndex);
+		const index = items.findIndex((item) => item.value === currentValue);
+		if (index >= 0) {
+			this.selectList.setSelectedIndex(index);
 		}
-
-		this.selectList.onSelect = (item) => {
-			onSelect(item.value);
-		};
-
+		this.selectList.onSelect = (item) => onSelect(item.value);
 		this.selectList.onCancel = onCancel;
-
-		if (onSelectionChange) {
-			this.selectList.onSelectionChange = (item) => {
-				onSelectionChange(item.value);
-			};
-		}
-
 		this.addChild(this.selectList);
-
-		// Hint
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.fg("dim", "  Enter to select · Esc to go back"), 0, 0));
 	}
@@ -149,320 +199,318 @@ class SelectSubmenu extends Container {
 	}
 }
 
-/**
- * Main settings selector component.
- */
-export class SettingsSelectorComponent extends Container {
-	private settingsList: SettingsList;
+class SettingDetailComponent extends Container {
+	private readonly settingsList: SettingsList;
 
-	constructor(config: SettingsConfig, callbacks: SettingsCallbacks) {
+	constructor(
+		private readonly node: ResolvedSettingNode,
+		private readonly registry: SettingsRegistry,
+		private readonly runtimeContext: SettingsRuntimeContext,
+		private readonly scope: SettingsScope,
+		private readonly done: () => void,
+	) {
 		super();
 
-		const supportsImages = getCapabilities().images;
-
-		const items: SettingItem[] = [
-			{
-				id: "autocompact",
-				label: "Auto-compact",
-				description: "Automatically compact context when it gets too large",
-				currentValue: config.autoCompact ? "true" : "false",
-				values: ["true", "false"],
-			},
-			{
-				id: "steering-mode",
-				label: "Steering mode",
-				description:
-					"Enter while streaming queues steering messages. 'one-at-a-time': deliver one, wait for response. 'all': deliver all at once.",
-				currentValue: config.steeringMode,
-				values: ["one-at-a-time", "all"],
-			},
-			{
-				id: "follow-up-mode",
-				label: "Follow-up mode",
-				description:
-					"Alt+Enter queues follow-up messages until agent stops. 'one-at-a-time': deliver one, wait for response. 'all': deliver all at once.",
-				currentValue: config.followUpMode,
-				values: ["one-at-a-time", "all"],
-			},
-			{
-				id: "transport",
-				label: "Transport",
-				description: "Preferred transport for providers that support multiple transports",
-				currentValue: config.transport,
-				values: ["sse", "websocket", "auto"],
-			},
-			{
-				id: "hide-thinking",
-				label: "Hide thinking",
-				description: "Hide thinking blocks in assistant responses",
-				currentValue: config.hideThinkingBlock ? "true" : "false",
-				values: ["true", "false"],
-			},
-			{
-				id: "collapse-changelog",
-				label: "Collapse changelog",
-				description: "Show condensed changelog after updates",
-				currentValue: config.collapseChangelog ? "true" : "false",
-				values: ["true", "false"],
-			},
-			{
-				id: "quiet-startup",
-				label: "Quiet startup",
-				description: "Disable verbose printing at startup",
-				currentValue: config.quietStartup ? "true" : "false",
-				values: ["true", "false"],
-			},
-			{
-				id: "install-telemetry",
-				label: "Install telemetry",
-				description: "Send an anonymous version/update ping after changelog-detected updates",
-				currentValue: config.enableInstallTelemetry ? "true" : "false",
-				values: ["true", "false"],
-			},
-			{
-				id: "double-escape-action",
-				label: "Double-escape action",
-				description: "Action when pressing Escape twice with empty editor",
-				currentValue: config.doubleEscapeAction,
-				values: ["tree", "fork", "none"],
-			},
-			{
-				id: "tree-filter-mode",
-				label: "Tree filter mode",
-				description: "Default filter when opening /tree",
-				currentValue: config.treeFilterMode,
-				values: ["default", "no-tools", "user-only", "labeled-only", "all"],
-			},
-			{
-				id: "thinking",
-				label: "Thinking level",
-				description: "Reasoning depth for thinking-capable models",
-				currentValue: config.thinkingLevel,
-				submenu: (currentValue, done) =>
-					new SelectSubmenu(
-						"Thinking Level",
-						"Select reasoning depth for thinking-capable models",
-						config.availableThinkingLevels.map((level) => ({
-							value: level,
-							label: level,
-							description: THINKING_DESCRIPTIONS[level],
-						})),
-						currentValue,
-						(value) => {
-							callbacks.onThinkingLevelChange(value as ThinkingLevel);
-							done(value);
-						},
-						() => done(),
-					),
-			},
-			{
-				id: "theme",
-				label: "Theme",
-				description: "Color theme for the interface",
-				currentValue: config.currentTheme,
-				submenu: (currentValue, done) =>
-					new SelectSubmenu(
-						"Theme",
-						"Select color theme",
-						config.availableThemes.map((t) => ({
-							value: t,
-							label: t,
-						})),
-						currentValue,
-						(value) => {
-							callbacks.onThemeChange(value);
-							done(value);
-						},
-						() => {
-							// Restore original theme on cancel
-							callbacks.onThemePreview?.(currentValue);
-							done();
-						},
-						(value) => {
-							// Preview theme on selection change
-							callbacks.onThemePreview?.(value);
-						},
-					),
-			},
-		];
-
-		// Only show image toggle if terminal supports it
-		if (supportsImages) {
-			// Insert after autocompact
-			items.splice(1, 0, {
-				id: "show-images",
-				label: "Show images",
-				description: "Render images inline in terminal",
-				currentValue: config.showImages ? "true" : "false",
-				values: ["true", "false"],
-			});
-			items.splice(2, 0, {
-				id: "image-width-cells",
-				label: "Image width",
-				description: "Preferred inline image width in terminal cells",
-				currentValue: String(config.imageWidthCells),
-				values: ["60", "80", "120"],
-			});
+		this.addChild(new Text(theme.bold(theme.fg("accent", node.label)), 0, 0));
+		this.addChild(new Spacer(1));
+		if (node.description) {
+			this.addChild(new Text(theme.fg("muted", node.description), 0, 0));
+			this.addChild(new Spacer(1));
 		}
-
-		// Image auto-resize toggle (always available, affects both attached and read images)
-		items.splice(supportsImages ? 3 : 1, 0, {
-			id: "auto-resize-images",
-			label: "Auto-resize images",
-			description: "Resize large images to 2000x2000 max for better model compatibility",
-			currentValue: config.autoResizeImages ? "true" : "false",
-			values: ["true", "false"],
-		});
-
-		// Block images toggle (always available, insert after auto-resize-images)
-		const autoResizeIndex = items.findIndex((item) => item.id === "auto-resize-images");
-		items.splice(autoResizeIndex + 1, 0, {
-			id: "block-images",
-			label: "Block images",
-			description: "Prevent images from being sent to LLM providers",
-			currentValue: config.blockImages ? "true" : "false",
-			values: ["true", "false"],
-		});
-
-		// Skill commands toggle (insert after block-images)
-		const blockImagesIndex = items.findIndex((item) => item.id === "block-images");
-		items.splice(blockImagesIndex + 1, 0, {
-			id: "skill-commands",
-			label: "Skill commands",
-			description: "Register skills as /skill:name commands",
-			currentValue: config.enableSkillCommands ? "true" : "false",
-			values: ["true", "false"],
-		});
-
-		// Hardware cursor toggle (insert after skill-commands)
-		const skillCommandsIndex = items.findIndex((item) => item.id === "skill-commands");
-		items.splice(skillCommandsIndex + 1, 0, {
-			id: "show-hardware-cursor",
-			label: "Show hardware cursor",
-			description: "Show the terminal cursor while still positioning it for IME support",
-			currentValue: config.showHardwareCursor ? "true" : "false",
-			values: ["true", "false"],
-		});
-
-		// Editor padding toggle (insert after show-hardware-cursor)
-		const hardwareCursorIndex = items.findIndex((item) => item.id === "show-hardware-cursor");
-		items.splice(hardwareCursorIndex + 1, 0, {
-			id: "editor-padding",
-			label: "Editor padding",
-			description: "Horizontal padding for input editor (0-3)",
-			currentValue: String(config.editorPaddingX),
-			values: ["0", "1", "2", "3"],
-		});
-
-		// Autocomplete max visible toggle (insert after editor-padding)
-		const editorPaddingIndex = items.findIndex((item) => item.id === "editor-padding");
-		items.splice(editorPaddingIndex + 1, 0, {
-			id: "autocomplete-max-visible",
-			label: "Autocomplete max items",
-			description: "Max visible items in autocomplete dropdown (3-20)",
-			currentValue: String(config.autocompleteMaxVisible),
-			values: ["3", "5", "7", "10", "15", "20"],
-		});
-
-		// Clear on shrink toggle (insert after autocomplete-max-visible)
-		const autocompleteIndex = items.findIndex((item) => item.id === "autocomplete-max-visible");
-		items.splice(autocompleteIndex + 1, 0, {
-			id: "clear-on-shrink",
-			label: "Clear on shrink",
-			description: "Clear empty rows when content shrinks (may cause flicker)",
-			currentValue: config.clearOnShrink ? "true" : "false",
-			values: ["true", "false"],
-		});
-
-		// Terminal progress toggle (insert after clear-on-shrink)
-		const clearOnShrinkIndex = items.findIndex((item) => item.id === "clear-on-shrink");
-		items.splice(clearOnShrinkIndex + 1, 0, {
-			id: "terminal-progress",
-			label: "Terminal progress",
-			description: "Show OSC 9;4 progress indicators in the terminal tab bar",
-			currentValue: config.showTerminalProgress ? "true" : "false",
-			values: ["true", "false"],
-		});
-
-		// Add borders
-		this.addChild(new DynamicBorder());
+		this.addChild(
+			new Text(
+				theme.fg(
+					"dim",
+					scope === "project"
+						? node.inherited
+							? `Project scope is inheriting global value: ${stringifyForInput(node.effectiveValue) || "unset"}`
+							: `Project override: ${stringifyForInput(node.scopedValue)}`
+						: `Global value: ${stringifyForInput(node.currentValue) || "unset"}`,
+				),
+				0,
+				0,
+			),
+		);
+		this.addChild(new Spacer(1));
 
 		this.settingsList = new SettingsList(
-			items,
+			this.buildItems(),
 			10,
 			getSettingsListTheme(),
-			(id, newValue) => {
-				switch (id) {
-					case "autocompact":
-						callbacks.onAutoCompactChange(newValue === "true");
-						break;
-					case "show-images":
-						callbacks.onShowImagesChange(newValue === "true");
-						break;
-					case "image-width-cells":
-						callbacks.onImageWidthCellsChange(parseInt(newValue, 10));
-						break;
-					case "auto-resize-images":
-						callbacks.onAutoResizeImagesChange(newValue === "true");
-						break;
-					case "block-images":
-						callbacks.onBlockImagesChange(newValue === "true");
-						break;
-					case "skill-commands":
-						callbacks.onEnableSkillCommandsChange(newValue === "true");
-						break;
-					case "steering-mode":
-						callbacks.onSteeringModeChange(newValue as "all" | "one-at-a-time");
-						break;
-					case "follow-up-mode":
-						callbacks.onFollowUpModeChange(newValue as "all" | "one-at-a-time");
-						break;
-					case "transport":
-						callbacks.onTransportChange(newValue as Transport);
-						break;
-					case "hide-thinking":
-						callbacks.onHideThinkingBlockChange(newValue === "true");
-						break;
-					case "collapse-changelog":
-						callbacks.onCollapseChangelogChange(newValue === "true");
-						break;
-					case "quiet-startup":
-						callbacks.onQuietStartupChange(newValue === "true");
-						break;
-					case "install-telemetry":
-						callbacks.onEnableInstallTelemetryChange(newValue === "true");
-						break;
-					case "double-escape-action":
-						callbacks.onDoubleEscapeActionChange(newValue as "fork" | "tree");
-						break;
-					case "tree-filter-mode":
-						callbacks.onTreeFilterModeChange(
-							newValue as "default" | "no-tools" | "user-only" | "labeled-only" | "all",
-						);
-						break;
-					case "show-hardware-cursor":
-						callbacks.onShowHardwareCursorChange(newValue === "true");
-						break;
-					case "editor-padding":
-						callbacks.onEditorPaddingXChange(parseInt(newValue, 10));
-						break;
-					case "autocomplete-max-visible":
-						callbacks.onAutocompleteMaxVisibleChange(parseInt(newValue, 10));
-						break;
-					case "clear-on-shrink":
-						callbacks.onClearOnShrinkChange(newValue === "true");
-						break;
-					case "terminal-progress":
-						callbacks.onShowTerminalProgressChange(newValue === "true");
-						break;
+			(id, value) => {
+				if (id.startsWith("__unset:")) {
+					const targetId = id.slice("__unset:".length);
+					const target = targetId === this.node.id ? this.node : this.findNodeById(targetId);
+					if (!target) return;
+					this.registry.unset(target.id, this.scope, this.runtimeContext);
+					this.done();
+					return;
 				}
+				const target = id === "__self" ? this.node : this.findNodeById(id);
+				if (!target) return;
+				applySettingSelection(this.registry, target, this.scope, this.runtimeContext, value);
+				this.done();
 			},
-			callbacks.onCancel,
-			{ enableSearch: true },
+			this.done,
 		);
 
 		this.addChild(this.settingsList);
+	}
+
+	private buildItems(): SettingItem[] {
+		const items: SettingItem[] = [];
+		if (hasDetailSelfItem(this.node)) {
+			items.push(this.toSettingItem(this.node, true));
+		}
+		for (const child of this.node.children) {
+			items.push(this.toSettingItem(child, false));
+			if (canUnsetNode(child, this.registry, this.scope, this.runtimeContext)) {
+				items.push(this.toUnsetItem(child));
+			}
+		}
+		if (canUnsetNode(this.node, this.registry, this.scope, this.runtimeContext)) {
+			items.push(this.toUnsetItem(this.node));
+		}
+		return items;
+	}
+
+	private findNodeById(id: string): ResolvedSettingNode | undefined {
+		return this.findNodeByIdInTree(this.node, id);
+	}
+
+	private findNodeByIdInTree(node: ResolvedSettingNode, id: string): ResolvedSettingNode | undefined {
+		if (node.id === id) {
+			return node;
+		}
+		for (const child of node.children) {
+			const resolved = this.findNodeByIdInTree(child, id);
+			if (resolved) {
+				return resolved;
+			}
+		}
+		return undefined;
+	}
+
+	private toUnsetItem(node: ResolvedSettingNode): SettingItem {
+		const label =
+			node.id === this.node.id
+				? this.scope === "project"
+					? "Reset project override"
+					: "Reset global value"
+				: `Reset ${node.label}`;
+		return {
+			id: `__unset:${node.id}`,
+			label,
+			description: "Remove the value from the current scope.",
+			currentValue: "Unset",
+			values: ["Unset"],
+		};
+	}
+
+	private toSettingItem(node: ResolvedSettingNode, self: boolean): SettingItem {
+		const id = self ? "__self" : node.id;
+		const allowUnset = canUnsetNode(node, this.registry, this.scope, this.runtimeContext);
+		if (isSelfEditableNode(node)) {
+			return {
+				id,
+				label: self ? "Value" : node.label,
+				description: node.description,
+				currentValue: stringifyForInput(node.currentValue),
+				displayValue: formatSettingValue(node),
+				submenu: (_currentValue, close) =>
+					new ValueEditorComponent(
+						node,
+						(value) => {
+							if (value !== RESET_SETTING_VALUE) {
+								const parsed = parseSettingValue(node, value);
+								if (!parsed.ok) {
+									return parsed.error;
+								}
+							}
+							close(value);
+							return undefined;
+						},
+						() => close(),
+					),
+			};
+		}
+
+		const hasNestedChildren = node.children.length > 0 && !self;
+		if (hasNestedChildren) {
+			return {
+				id,
+				label: node.label,
+				description: node.description,
+				currentValue: stringifyForInput(node.currentValue),
+				displayValue: formatSettingValue(node),
+				submenu: (_currentValue, close) =>
+					new SettingDetailComponent(node, this.registry, this.runtimeContext, this.scope, () => close()),
+			};
+		}
+
+		return {
+			id,
+			label: self ? "Value" : node.label,
+			description: node.description,
+			currentValue: stringifyForInput(node.currentValue),
+			displayValue: formatSettingValue(node),
+			submenu: (_currentValue, close) =>
+				new ChoiceEditorComponent(
+					self ? this.node.label : node.label,
+					node.description,
+					buildChoiceItems(node, allowUnset),
+					stringifyForInput(node.currentValue),
+					(value) => close(value),
+					() => close(),
+				),
+		};
+	}
+
+	handleInput(data: string): void {
+		this.settingsList.handleInput(data);
+	}
+}
+
+export interface SettingsSelectorConfig {
+	registry: SettingsRegistry;
+	runtimeContext: SettingsRuntimeContext;
+	scope?: SettingsScope;
+}
+
+export interface SettingsCallbacks {
+	onCancel: () => void;
+}
+
+function isDetailNode(node: ResolvedSettingNode): boolean {
+	return node.children.length > 0 || isSelfEditableNode(node);
+}
+
+function isInlineToggleNode(node: ResolvedSettingNode, allowUnset: boolean): boolean {
+	return !allowUnset && !isDetailNode(node) && node.type === "toggle";
+}
+
+function isDirectChoiceMenuNode(node: ResolvedSettingNode): boolean {
+	return !isDetailNode(node) && node.options.length > 0 && node.type !== "toggle";
+}
+
+export class SettingsSelectorComponent extends Container {
+	private readonly settingsList: SettingsList;
+	private readonly scopeText: Text;
+	private scope: SettingsScope;
+	private sections: ResolvedSettingsSection[] = [];
+	private nodeById = new Map<string, ResolvedSettingNode>();
+
+	constructor(
+		private readonly config: SettingsSelectorConfig,
+		callbacks: SettingsCallbacks,
+	) {
+		super();
+		this.scope = config.scope ?? "global";
+
 		this.addChild(new DynamicBorder());
+		this.addChild(new Text(theme.bold(theme.fg("accent", "Settings")), 1, 0));
+		this.scopeText = new Text("", 1, 0);
+		this.addChild(this.scopeText);
+
+		this.settingsList = new SettingsList(
+			[],
+			12,
+			getSettingsListTheme() as SettingsListTheme,
+			(id, value) => {
+				const node = this.nodeById.get(id);
+				if (!node) return;
+				applySettingSelection(this.config.registry, node, this.scope, this.config.runtimeContext, value);
+				this.rebuild();
+			},
+			callbacks.onCancel,
+			{
+				enableSearch: true,
+				extraHint: "  Left/Right to switch scope · Type to search · Enter/Space to change · Esc to cancel",
+				onInput: (data: string) => {
+					const kb = getKeybindings();
+					if (!kb.matches(data, "tui.editor.cursorLeft") && !kb.matches(data, "tui.editor.cursorRight")) {
+						return false;
+					}
+					this.scope = this.scope === "global" ? "project" : "global";
+					this.rebuild();
+					return true;
+				},
+			},
+		);
+		this.addChild(this.settingsList);
+		this.addChild(new DynamicBorder());
+
+		this.rebuild();
+	}
+
+	private rebuild(): void {
+		this.sections = this.config.registry.resolve(this.config.runtimeContext, this.scope);
+		this.nodeById.clear();
+		const items: SettingItem[] = [];
+		for (const section of this.sections) {
+			items.push({
+				id: `section:${section.id}`,
+				kind: "section",
+				label: section.label,
+				currentValue: "",
+			});
+			for (const node of section.items) {
+				items.push(...this.toListItems(node));
+			}
+		}
+
+		this.scopeText.setText(
+			theme.fg("muted", `Scope: ${this.scope === "global" ? "[Global] Project" : "Global [Project]"}`),
+		);
+		this.settingsList.setItems(items);
+		this.settingsList.invalidate();
+	}
+
+	private toListItems(node: ResolvedSettingNode, ancestors: ResolvedSettingNode[] = []): SettingItem[] {
+		this.nodeById.set(node.id, node);
+		const label =
+			ancestors.length === 0
+				? node.label
+				: `${ancestors.map((ancestor) => ancestor.label).join(" / ")} / ${node.label}`;
+		const allowUnset = canUnsetNode(node, this.config.registry, this.scope, this.config.runtimeContext);
+		const items: SettingItem[] = [
+			{
+				id: node.id,
+				label,
+				description: node.description,
+				currentValue: stringifyForInput(node.currentValue),
+				displayValue: formatSettingValue(node),
+				values: isInlineToggleNode(node, allowUnset) ? toChoiceItems(node).map((item) => item.value) : undefined,
+				submenu:
+					isDirectChoiceMenuNode(node) || (node.type === "toggle" && allowUnset)
+						? (_currentValue, done) =>
+								new ChoiceEditorComponent(
+									node.label,
+									node.description,
+									buildChoiceItems(node, allowUnset),
+									stringifyForInput(node.currentValue),
+									(value) => done(value),
+									() => done(),
+								)
+						: !isInlineToggleNode(node, allowUnset)
+							? (_currentValue, done) =>
+									new SettingDetailComponent(
+										node,
+										this.config.registry,
+										this.config.runtimeContext,
+										this.scope,
+										() => {
+											this.rebuild();
+											done();
+										},
+									)
+							: undefined,
+			},
+		];
+		for (const child of node.children) {
+			items.push(...this.toListItems(child, [...ancestors, node]));
+		}
+		return items;
 	}
 
 	getSettingsList(): SettingsList {

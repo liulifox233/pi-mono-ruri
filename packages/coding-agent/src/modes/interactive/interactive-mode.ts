@@ -15,6 +15,7 @@ import {
 	type Message,
 	type Model,
 	type OAuthProviderId,
+	type Transport,
 } from "@mariozechner/pi-ai";
 import type {
 	AutocompleteItem,
@@ -76,6 +77,7 @@ import { DefaultPackageManager } from "../../core/package-manager.js";
 import type { ResourceDiagnostic } from "../../core/resource-loader.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
 import { type SessionContext, SessionManager } from "../../core/session-manager.js";
+import type { SettingsRuntimeContext } from "../../core/settings-registry.js";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { SourceInfo } from "../../core/source-info.js";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.js";
@@ -1633,6 +1635,103 @@ export class InteractiveMode {
 		return this.session.getToolDefinition(toolName);
 	}
 
+	private createSettingsRuntimeContext(options?: {
+		settingsNamespace?: string;
+		includeRuntimeSetters?: boolean;
+	}): SettingsRuntimeContext {
+		const runtime: NonNullable<SettingsRuntimeContext["runtime"]> = {
+			getThinkingLevel: () => this.session.thinkingLevel,
+			getSteeringMode: () => this.session.steeringMode,
+			getFollowUpMode: () => this.session.followUpMode,
+			getAutoCompactionEnabled: () => this.session.autoCompactionEnabled,
+		};
+
+		if (options?.includeRuntimeSetters) {
+			runtime.setThinkingLevel = (value, _scope) => {
+				this.session.setThinkingLevel(value, { persistScope: false });
+				this.footer.invalidate();
+				this.updateEditorBorderColor();
+			};
+			runtime.setSteeringMode = (value, _scope) => {
+				this.session.setSteeringMode(value, { persistScope: false });
+			};
+			runtime.setFollowUpMode = (value, _scope) => {
+				this.session.setFollowUpMode(value, { persistScope: false });
+			};
+			runtime.setAutoCompactionEnabled = (value, _scope) => {
+				this.session.setAutoCompactionEnabled(value, { persistScope: false });
+				this.footer.setAutoCompactEnabled(value);
+			};
+			runtime.applyTheme = (themeName, _scope) => {
+				const result = setTheme(themeName, true);
+				this.ui.invalidate();
+				if (!result.success) {
+					this.showError(`Failed to load theme "${themeName}": ${result.error}\nFell back to dark theme.`);
+				}
+			};
+			runtime.setShowImages = (value, _scope) => {
+				for (const child of this.chatContainer.children) {
+					if (child instanceof ToolExecutionComponent) {
+						child.setShowImages(value);
+					}
+				}
+			};
+			runtime.setImageWidthCells = (value, _scope) => {
+				for (const child of this.chatContainer.children) {
+					if (child instanceof ToolExecutionComponent) {
+						child.setImageWidthCells(value);
+					}
+				}
+			};
+			runtime.setEnableSkillCommands = (_value, _scope) => {
+				this.setupAutocompleteProvider();
+			};
+			runtime.setTransport = (value, _scope) => {
+				this.session.agent.transport = value as Transport;
+			};
+			runtime.setHideThinkingBlock = (value, _scope) => {
+				this.hideThinkingBlock = value;
+				for (const child of this.chatContainer.children) {
+					if (child instanceof AssistantMessageComponent) {
+						child.setHideThinkingBlock(value);
+					}
+				}
+				this.chatContainer.clear();
+				this.rebuildChatFromMessages();
+			};
+			runtime.setShowHardwareCursor = (value, _scope) => {
+				this.ui.setShowHardwareCursor(value);
+			};
+			runtime.setEditorPaddingX = (value, _scope) => {
+				this.defaultEditor.setPaddingX(value);
+				if (this.editor !== this.defaultEditor && this.editor.setPaddingX !== undefined) {
+					this.editor.setPaddingX(value);
+				}
+			};
+			runtime.setAutocompleteMaxVisible = (value, _scope) => {
+				this.defaultEditor.setAutocompleteMaxVisible(value);
+				if (this.editor !== this.defaultEditor && this.editor.setAutocompleteMaxVisible !== undefined) {
+					this.editor.setAutocompleteMaxVisible(value);
+				}
+			};
+			runtime.setClearOnShrink = (value, _scope) => {
+				this.ui.setClearOnShrink(value);
+			};
+			runtime.setShowTerminalProgress = (_value, _scope) => {};
+		}
+
+		return {
+			settingsManager: this.settingsManager,
+			sessionManager: this.session.sessionManager,
+			modelRegistry: this.session.modelRegistry,
+			model: this.session.model,
+			availableThemes: getAvailableThemes(),
+			availableThinkingLevels: this.session.getAvailableThinkingLevels(),
+			runtime,
+			settingsNamespace: options?.settingsNamespace,
+		};
+	}
+
 	/**
 	 * Set up keyboard shortcuts registered by extensions.
 	 */
@@ -1641,7 +1740,7 @@ export class InteractiveMode {
 		if (shortcuts.size === 0) return;
 
 		// Create a context for shortcut handlers
-		const createContext = (): ExtensionContext => ({
+		const createContext = (settingsNamespace: string): ExtensionContext => ({
 			ui: this.createExtensionUIContext(),
 			hasUI: true,
 			cwd: this.sessionManager.getCwd(),
@@ -1652,6 +1751,10 @@ export class InteractiveMode {
 			signal: this.session.agent.signal,
 			abort: () => this.session.abort(),
 			hasPendingMessages: () => this.session.pendingMessageCount > 0,
+			settings: {
+				get: (id) =>
+					this.session.settingsRegistry.get(id, this.createSettingsRuntimeContext({ settingsNamespace })),
+			},
 			shutdown: () => {
 				this.shutdownRequested = true;
 			},
@@ -1676,7 +1779,7 @@ export class InteractiveMode {
 				// Cast to KeyId - extension shortcuts use the same format
 				if (matchesKey(data, shortcutStr as KeyId)) {
 					// Run handler async, don't block input
-					Promise.resolve(shortcut.handler(createContext())).catch((err) => {
+					Promise.resolve(shortcut.handler(createContext(shortcut.settingsNamespace))).catch((err) => {
 						this.showError(`Shortcut handler error: ${err instanceof Error ? err.message : String(err)}`);
 					});
 					return true;
@@ -3731,143 +3834,10 @@ export class InteractiveMode {
 		this.showSelector((done) => {
 			const selector = new SettingsSelectorComponent(
 				{
-					autoCompact: this.session.autoCompactionEnabled,
-					showImages: this.settingsManager.getShowImages(),
-					imageWidthCells: this.settingsManager.getImageWidthCells(),
-					autoResizeImages: this.settingsManager.getImageAutoResize(),
-					blockImages: this.settingsManager.getBlockImages(),
-					enableSkillCommands: this.settingsManager.getEnableSkillCommands(),
-					steeringMode: this.session.steeringMode,
-					followUpMode: this.session.followUpMode,
-					transport: this.settingsManager.getTransport(),
-					thinkingLevel: this.session.thinkingLevel,
-					availableThinkingLevels: this.session.getAvailableThinkingLevels(),
-					currentTheme: this.settingsManager.getTheme() || "dark",
-					availableThemes: getAvailableThemes(),
-					hideThinkingBlock: this.hideThinkingBlock,
-					collapseChangelog: this.settingsManager.getCollapseChangelog(),
-					enableInstallTelemetry: this.settingsManager.getEnableInstallTelemetry(),
-					doubleEscapeAction: this.settingsManager.getDoubleEscapeAction(),
-					treeFilterMode: this.settingsManager.getTreeFilterMode(),
-					showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
-					editorPaddingX: this.settingsManager.getEditorPaddingX(),
-					autocompleteMaxVisible: this.settingsManager.getAutocompleteMaxVisible(),
-					quietStartup: this.settingsManager.getQuietStartup(),
-					clearOnShrink: this.settingsManager.getClearOnShrink(),
-					showTerminalProgress: this.settingsManager.getShowTerminalProgress(),
+					registry: this.session.settingsRegistry,
+					runtimeContext: this.createSettingsRuntimeContext({ includeRuntimeSetters: true }),
 				},
 				{
-					onAutoCompactChange: (enabled) => {
-						this.session.setAutoCompactionEnabled(enabled);
-						this.footer.setAutoCompactEnabled(enabled);
-					},
-					onShowImagesChange: (enabled) => {
-						this.settingsManager.setShowImages(enabled);
-						for (const child of this.chatContainer.children) {
-							if (child instanceof ToolExecutionComponent) {
-								child.setShowImages(enabled);
-							}
-						}
-					},
-					onImageWidthCellsChange: (width) => {
-						this.settingsManager.setImageWidthCells(width);
-						for (const child of this.chatContainer.children) {
-							if (child instanceof ToolExecutionComponent) {
-								child.setImageWidthCells(width);
-							}
-						}
-					},
-					onAutoResizeImagesChange: (enabled) => {
-						this.settingsManager.setImageAutoResize(enabled);
-					},
-					onBlockImagesChange: (blocked) => {
-						this.settingsManager.setBlockImages(blocked);
-					},
-					onEnableSkillCommandsChange: (enabled) => {
-						this.settingsManager.setEnableSkillCommands(enabled);
-						this.setupAutocompleteProvider();
-					},
-					onSteeringModeChange: (mode) => {
-						this.session.setSteeringMode(mode);
-					},
-					onFollowUpModeChange: (mode) => {
-						this.session.setFollowUpMode(mode);
-					},
-					onTransportChange: (transport) => {
-						this.settingsManager.setTransport(transport);
-						this.session.agent.transport = transport;
-					},
-					onThinkingLevelChange: (level) => {
-						this.session.setThinkingLevel(level);
-						this.footer.invalidate();
-						this.updateEditorBorderColor();
-					},
-					onThemeChange: (themeName) => {
-						const result = setTheme(themeName, true);
-						this.settingsManager.setTheme(themeName);
-						this.ui.invalidate();
-						if (!result.success) {
-							this.showError(`Failed to load theme "${themeName}": ${result.error}\nFell back to dark theme.`);
-						}
-					},
-					onThemePreview: (themeName) => {
-						const result = setTheme(themeName, true);
-						if (result.success) {
-							this.ui.invalidate();
-							this.ui.requestRender();
-						}
-					},
-					onHideThinkingBlockChange: (hidden) => {
-						this.hideThinkingBlock = hidden;
-						this.settingsManager.setHideThinkingBlock(hidden);
-						for (const child of this.chatContainer.children) {
-							if (child instanceof AssistantMessageComponent) {
-								child.setHideThinkingBlock(hidden);
-							}
-						}
-						this.chatContainer.clear();
-						this.rebuildChatFromMessages();
-					},
-					onCollapseChangelogChange: (collapsed) => {
-						this.settingsManager.setCollapseChangelog(collapsed);
-					},
-					onEnableInstallTelemetryChange: (enabled) => {
-						this.settingsManager.setEnableInstallTelemetry(enabled);
-					},
-					onQuietStartupChange: (enabled) => {
-						this.settingsManager.setQuietStartup(enabled);
-					},
-					onDoubleEscapeActionChange: (action) => {
-						this.settingsManager.setDoubleEscapeAction(action);
-					},
-					onTreeFilterModeChange: (mode) => {
-						this.settingsManager.setTreeFilterMode(mode);
-					},
-					onShowHardwareCursorChange: (enabled) => {
-						this.settingsManager.setShowHardwareCursor(enabled);
-						this.ui.setShowHardwareCursor(enabled);
-					},
-					onEditorPaddingXChange: (padding) => {
-						this.settingsManager.setEditorPaddingX(padding);
-						this.defaultEditor.setPaddingX(padding);
-						if (this.editor !== this.defaultEditor && this.editor.setPaddingX !== undefined) {
-							this.editor.setPaddingX(padding);
-						}
-					},
-					onAutocompleteMaxVisibleChange: (maxVisible) => {
-						this.settingsManager.setAutocompleteMaxVisible(maxVisible);
-						this.defaultEditor.setAutocompleteMaxVisible(maxVisible);
-						if (this.editor !== this.defaultEditor && this.editor.setAutocompleteMaxVisible !== undefined) {
-							this.editor.setAutocompleteMaxVisible(maxVisible);
-						}
-					},
-					onClearOnShrinkChange: (enabled) => {
-						this.settingsManager.setClearOnShrink(enabled);
-						this.ui.setClearOnShrink(enabled);
-					},
-					onShowTerminalProgressChange: (enabled) => {
-						this.settingsManager.setShowTerminalProgress(enabled);
-					},
 					onCancel: () => {
 						done();
 						this.ui.requestRender();

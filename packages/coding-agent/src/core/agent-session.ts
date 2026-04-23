@@ -75,7 +75,8 @@ import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.js";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.js";
-import type { SettingsManager } from "./settings-manager.js";
+import type { SettingsManager, SettingsScope } from "./settings-manager.js";
+import { createBuiltinSettingsRegistry, inferSettingsNamespace, type SettingsRegistry } from "./settings-registry.js";
 import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.js";
@@ -241,6 +242,7 @@ export class AgentSession {
 	readonly settingsManager: SettingsManager;
 
 	private _scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
+	private _settingsRegistry: SettingsRegistry = createBuiltinSettingsRegistry();
 
 	// Event subscription state
 	private _unsubscribeAgent?: () => void;
@@ -1097,7 +1099,7 @@ export class AgentSession {
 		if (!command) return false;
 
 		// Get command context from extension runner (includes session control methods)
-		const ctx = this._extensionRunner.createCommandContext();
+		const ctx = this._extensionRunner.createCommandContext(command.sourceInfo);
 
 		try {
 			await command.handler(args, ctx);
@@ -1480,7 +1482,7 @@ export class AgentSession {
 	 * Clamps to model capabilities based on available thinking levels.
 	 * Saves to session and settings only if the level actually changes.
 	 */
-	setThinkingLevel(level: ThinkingLevel): void {
+	setThinkingLevel(level: ThinkingLevel, options?: { persistScope?: SettingsScope | false }): void {
 		const availableLevels = this.getAvailableThinkingLevels();
 		const effectiveLevel = availableLevels.includes(level) ? level : this._clampThinkingLevel(level, availableLevels);
 
@@ -1492,7 +1494,10 @@ export class AgentSession {
 		if (isChanging) {
 			this.sessionManager.appendThinkingLevelChange(effectiveLevel);
 			if (this.supportsThinking() || effectiveLevel !== "off") {
-				this.settingsManager.setDefaultThinkingLevel(effectiveLevel);
+				const scope = options?.persistScope ?? "global";
+				if (scope !== false) {
+					this.settingsManager.setScopedValue(scope, "defaultThinkingLevel", effectiveLevel);
+				}
 			}
 		}
 	}
@@ -1572,18 +1577,24 @@ export class AgentSession {
 	 * Set steering message mode.
 	 * Saves to settings.
 	 */
-	setSteeringMode(mode: "all" | "one-at-a-time"): void {
+	setSteeringMode(mode: "all" | "one-at-a-time", options?: { persistScope?: SettingsScope | false }): void {
 		this.agent.steeringMode = mode;
-		this.settingsManager.setSteeringMode(mode);
+		const scope = options?.persistScope ?? "global";
+		if (scope !== false) {
+			this.settingsManager.setScopedValue(scope, "steeringMode", mode);
+		}
 	}
 
 	/**
 	 * Set follow-up message mode.
 	 * Saves to settings.
 	 */
-	setFollowUpMode(mode: "all" | "one-at-a-time"): void {
+	setFollowUpMode(mode: "all" | "one-at-a-time", options?: { persistScope?: SettingsScope | false }): void {
 		this.agent.followUpMode = mode;
-		this.settingsManager.setFollowUpMode(mode);
+		const scope = options?.persistScope ?? "global";
+		if (scope !== false) {
+			this.settingsManager.setScopedValue(scope, "followUpMode", mode);
+		}
 	}
 
 	// =========================================================================
@@ -2011,8 +2022,11 @@ export class AgentSession {
 	/**
 	 * Toggle auto-compaction setting.
 	 */
-	setAutoCompactionEnabled(enabled: boolean): void {
-		this.settingsManager.setCompactionEnabled(enabled);
+	setAutoCompactionEnabled(enabled: boolean, options?: { persistScope?: SettingsScope | false }): void {
+		const scope = options?.persistScope ?? "global";
+		if (scope !== false) {
+			this.settingsManager.setScopedValue(scope, "compaction.enabled", enabled);
+		}
 	}
 
 	/** Whether auto-compaction is enabled */
@@ -2339,6 +2353,25 @@ export class AgentSession {
 		);
 
 		const extensionsResult = this._resourceLoader.getExtensions();
+		this._settingsRegistry = createBuiltinSettingsRegistry();
+		for (const extension of extensionsResult.extensions) {
+			for (const section of extension.settingsSections) {
+				this._settingsRegistry.registerSection(section);
+			}
+			for (const definition of extension.settingsDefinitions) {
+				this._settingsRegistry.register({
+					...definition,
+					namespace: definition.namespace ?? inferSettingsNamespace(definition.sourceInfo, definition.id),
+				});
+			}
+			for (const augmentation of extension.settingsAugmentations) {
+				this._settingsRegistry.augment({
+					...augmentation,
+					namespace:
+						augmentation.namespace ?? inferSettingsNamespace(augmentation.sourceInfo, augmentation.targetId),
+				});
+			}
+		}
 		if (options.flagValues) {
 			for (const [name, value] of options.flagValues) {
 				extensionsResult.runtime.flagValues.set(name, value);
@@ -2351,6 +2384,8 @@ export class AgentSession {
 			this._cwd,
 			this.sessionManager,
 			this._modelRegistry,
+			this.settingsManager,
+			this._settingsRegistry,
 		);
 		if (this._extensionRunnerRef) {
 			this._extensionRunnerRef.current = this._extensionRunner;
@@ -3085,5 +3120,9 @@ export class AgentSession {
 	 */
 	get extensionRunner(): ExtensionRunner {
 		return this._extensionRunner;
+	}
+
+	get settingsRegistry(): SettingsRegistry {
+		return this._settingsRegistry;
 	}
 }

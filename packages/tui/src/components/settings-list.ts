@@ -7,15 +7,19 @@ import { Input } from "./input.js";
 export interface SettingItem {
 	/** Unique identifier for this setting */
 	id: string;
+	/** Item kind. Section items are rendered as headers and are not selectable. */
+	kind?: "setting" | "section";
 	/** Display label (left side) */
 	label: string;
 	/** Optional description shown when selected */
 	description?: string;
-	/** Current value to display (right side) */
+	/** Current raw value used for cycling and submenu selection */
 	currentValue: string;
+	/** Optional formatted value to display instead of the raw value */
+	displayValue?: string;
 	/** If provided, Enter/Space cycles through these values */
 	values?: string[];
-	/** If provided, Enter opens this submenu. Receives current value and done callback. */
+	/** If provided, Enter opens this submenu. Receives current raw value and done callback. */
 	submenu?: (currentValue: string, done: (selectedValue?: string) => void) => Component;
 }
 
@@ -29,6 +33,8 @@ export interface SettingsListTheme {
 
 export interface SettingsListOptions {
 	enableSearch?: boolean;
+	extraHint?: string;
+	onInput?: (data: string) => boolean;
 }
 
 export class SettingsList implements Component {
@@ -41,6 +47,8 @@ export class SettingsList implements Component {
 	private onCancel: () => void;
 	private searchInput?: Input;
 	private searchEnabled: boolean;
+	private extraHint?: string;
+	private extraInputHandler?: (data: string) => boolean;
 
 	// Submenu state
 	private submenuComponent: Component | null = null;
@@ -61,17 +69,39 @@ export class SettingsList implements Component {
 		this.onChange = onChange;
 		this.onCancel = onCancel;
 		this.searchEnabled = options.enableSearch ?? false;
+		this.extraHint = options.extraHint;
+		this.extraInputHandler = options.onInput;
 		if (this.searchEnabled) {
 			this.searchInput = new Input();
 		}
+		this.selectedIndex = this.findNextSelectableIndex(0, 1);
 	}
 
 	/** Update an item's currentValue */
-	updateValue(id: string, newValue: string): void {
+	updateValue(id: string, newValue: string, displayValue?: string): void {
 		const item = this.items.find((i) => i.id === id);
 		if (item) {
+			const previousValue = item.currentValue;
 			item.currentValue = newValue;
+			if (displayValue !== undefined) {
+				item.displayValue = displayValue;
+			} else if (item.displayValue === undefined || item.displayValue === previousValue) {
+				item.displayValue = newValue;
+			}
 		}
+	}
+
+	setItems(items: SettingItem[]): void {
+		const selectedItem = (this.searchEnabled ? this.filteredItems : this.items)[this.selectedIndex];
+		const selectedId = selectedItem?.kind === "section" ? undefined : selectedItem?.id;
+
+		this.items = items;
+		if (this.searchEnabled && this.searchInput) {
+			this.applyFilter(this.searchInput.getValue(), selectedId);
+			return;
+		}
+		this.filteredItems = items;
+		this.selectedIndex = this.findSelectableIndexById(this.filteredItems, selectedId);
 	}
 
 	invalidate(): void {
@@ -126,6 +156,10 @@ export class SettingsList implements Component {
 			if (!item) continue;
 
 			const isSelected = i === this.selectedIndex;
+			if (item.kind === "section") {
+				lines.push(truncateToWidth(this.theme.label(item.label, false), width));
+				continue;
+			}
 			const prefix = isSelected ? this.theme.cursor : "  ";
 			const prefixWidth = visibleWidth(prefix);
 
@@ -138,7 +172,10 @@ export class SettingsList implements Component {
 			const usedWidth = prefixWidth + maxLabelWidth + visibleWidth(separator);
 			const valueMaxWidth = width - usedWidth - 2;
 
-			const valueText = this.theme.value(truncateToWidth(item.currentValue, valueMaxWidth, ""), isSelected);
+			const valueText = this.theme.value(
+				truncateToWidth(item.displayValue ?? item.currentValue, valueMaxWidth, ""),
+				isSelected,
+			);
 
 			lines.push(truncateToWidth(prefix + labelText + separator + valueText, width));
 		}
@@ -151,7 +188,7 @@ export class SettingsList implements Component {
 
 		// Add description for selected item
 		const selectedItem = displayItems[this.selectedIndex];
-		if (selectedItem?.description) {
+		if (selectedItem?.kind !== "section" && selectedItem?.description) {
 			lines.push("");
 			const wrappedDesc = wrapTextWithAnsi(selectedItem.description, width - 4);
 			for (const line of wrappedDesc) {
@@ -176,12 +213,15 @@ export class SettingsList implements Component {
 		// Main list input handling
 		const kb = getKeybindings();
 		const displayItems = this.searchEnabled ? this.filteredItems : this.items;
+		if (this.extraInputHandler?.(data)) {
+			return;
+		}
 		if (kb.matches(data, "tui.select.up")) {
 			if (displayItems.length === 0) return;
-			this.selectedIndex = this.selectedIndex === 0 ? displayItems.length - 1 : this.selectedIndex - 1;
+			this.selectedIndex = this.findNextSelectableIndex(this.selectedIndex - 1, -1);
 		} else if (kb.matches(data, "tui.select.down")) {
 			if (displayItems.length === 0) return;
-			this.selectedIndex = this.selectedIndex === displayItems.length - 1 ? 0 : this.selectedIndex + 1;
+			this.selectedIndex = this.findNextSelectableIndex(this.selectedIndex + 1, 1);
 		} else if (kb.matches(data, "tui.select.confirm") || data === " ") {
 			this.activateItem();
 		} else if (kb.matches(data, "tui.select.cancel")) {
@@ -198,14 +238,18 @@ export class SettingsList implements Component {
 
 	private activateItem(): void {
 		const item = this.searchEnabled ? this.filteredItems[this.selectedIndex] : this.items[this.selectedIndex];
-		if (!item) return;
+		if (!item || item.kind === "section") return;
 
 		if (item.submenu) {
 			// Open submenu, passing current value so it can pre-select correctly
 			this.submenuItemIndex = this.selectedIndex;
 			this.submenuComponent = item.submenu(item.currentValue, (selectedValue?: string) => {
 				if (selectedValue !== undefined) {
+					const previousValue = item.currentValue;
 					item.currentValue = selectedValue;
+					if (item.displayValue === undefined || item.displayValue === previousValue) {
+						item.displayValue = selectedValue;
+					}
 					this.onChange(item.id, selectedValue);
 				}
 				this.closeSubmenu();
@@ -215,7 +259,11 @@ export class SettingsList implements Component {
 			const currentIndex = item.values.indexOf(item.currentValue);
 			const nextIndex = (currentIndex + 1) % item.values.length;
 			const newValue = item.values[nextIndex];
+			const previousValue = item.currentValue;
 			item.currentValue = newValue;
+			if (item.displayValue === undefined || item.displayValue === previousValue) {
+				item.displayValue = newValue;
+			}
 			this.onChange(item.id, newValue);
 		}
 	}
@@ -229,9 +277,69 @@ export class SettingsList implements Component {
 		}
 	}
 
-	private applyFilter(query: string): void {
-		this.filteredItems = fuzzyFilter(this.items, query, (item) => item.label);
-		this.selectedIndex = 0;
+	private applyFilter(query: string, preferredSelectedId?: string): void {
+		if (!query.trim()) {
+			this.filteredItems = this.items;
+			this.selectedIndex = this.findSelectableIndexById(this.filteredItems, preferredSelectedId);
+			return;
+		}
+
+		const matched = new Set(
+			fuzzyFilter(
+				this.items.filter((item) => item.kind !== "section"),
+				query,
+				(item) => item.label,
+			),
+		);
+		const filtered: SettingItem[] = [];
+		let pendingSection: SettingItem | undefined;
+
+		for (const item of this.items) {
+			if (item.kind === "section") {
+				pendingSection = item;
+				continue;
+			}
+			if (!matched.has(item)) {
+				continue;
+			}
+			if (pendingSection) {
+				filtered.push(pendingSection);
+				pendingSection = undefined;
+			}
+			filtered.push(item);
+		}
+
+		this.filteredItems = filtered;
+		this.selectedIndex = this.findSelectableIndexById(this.filteredItems, preferredSelectedId);
+	}
+
+	private findSelectableIndexById(displayItems: SettingItem[], id: string | undefined): number {
+		if (id) {
+			const index = displayItems.findIndex((item) => item.id === id && item.kind !== "section");
+			if (index !== -1) {
+				return index;
+			}
+		}
+		return this.findNextSelectableIndex(0, 1, displayItems);
+	}
+
+	private findNextSelectableIndex(startIndex: number, direction: 1 | -1, displayItems?: SettingItem[]): number {
+		const visibleItems = displayItems ?? (this.searchEnabled ? this.filteredItems : this.items);
+		if (visibleItems.length === 0) {
+			return 0;
+		}
+
+		let index = startIndex;
+		for (let attempts = 0; attempts < visibleItems.length; attempts++) {
+			if (index < 0) index = visibleItems.length - 1;
+			if (index >= visibleItems.length) index = 0;
+			if (visibleItems[index]?.kind !== "section") {
+				return index;
+			}
+			index += direction;
+		}
+
+		return 0;
 	}
 
 	private addHintLine(lines: string[], width: number): void {
@@ -239,9 +347,10 @@ export class SettingsList implements Component {
 		lines.push(
 			truncateToWidth(
 				this.theme.hint(
-					this.searchEnabled
-						? "  Type to search · Enter/Space to change · Esc to cancel"
-						: "  Enter/Space to change · Esc to cancel",
+					this.extraHint ??
+						(this.searchEnabled
+							? "  Type to search · Enter/Space to change · Esc to cancel"
+							: "  Enter/Space to change · Esc to cancel"),
 				),
 				width,
 			),

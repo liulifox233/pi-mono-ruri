@@ -28,6 +28,7 @@ import * as _bundledPiCodingAgent from "../../index.js";
 import { createEventBus, type EventBus } from "../event-bus.js";
 import type { ExecOptions } from "../exec.js";
 import { execCommand } from "../exec.js";
+import { inferSettingsNamespace } from "../settings-registry.js";
 import { createSyntheticSourceInfo } from "../source-info.js";
 import type {
 	Extension,
@@ -38,6 +39,9 @@ import type {
 	MessageRenderer,
 	ProviderConfig,
 	RegisteredCommand,
+	RegisteredSettingAugmentation,
+	RegisteredSettingDefinition,
+	RegisteredSettingsSection,
 	ToolDefinition,
 } from "./types.js";
 
@@ -225,7 +229,12 @@ function createExtensionAPI(
 			},
 		): void {
 			runtime.assertActive();
-			extension.shortcuts.set(shortcut, { shortcut, extensionPath: extension.path, ...options });
+			extension.shortcuts.set(shortcut, {
+				shortcut,
+				extensionPath: extension.path,
+				settingsNamespace: inferSettingsNamespace(extension.sourceInfo, shortcut),
+				...options,
+			});
 		},
 
 		registerFlag(
@@ -249,6 +258,31 @@ function createExtensionAPI(
 			runtime.assertActive();
 			if (!extension.flags.has(name)) return undefined;
 			return runtime.flagValues.get(name);
+		},
+
+		settings: {
+			registerSection(section): void {
+				runtime.assertActive();
+				extension.settingsSections.push({
+					...section,
+					sourceInfo: extension.sourceInfo,
+				} satisfies RegisteredSettingsSection);
+			},
+			register(setting): void {
+				runtime.assertActive();
+				extension.settingsDefinitions.push({
+					...setting,
+					sourceInfo: extension.sourceInfo,
+				} satisfies RegisteredSettingDefinition);
+			},
+			augment(targetId, augmentation): void {
+				runtime.assertActive();
+				extension.settingsAugmentations.push({
+					...augmentation,
+					targetId,
+					sourceInfo: extension.sourceInfo,
+				} satisfies RegisteredSettingAugmentation);
+			},
 		},
 
 		// Action methods - delegate to shared runtime
@@ -372,6 +406,9 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		commands: new Map(),
 		flags: new Map(),
 		shortcuts: new Map(),
+		settingsSections: [],
+		settingsDefinitions: [],
+		settingsAugmentations: [],
 	};
 }
 

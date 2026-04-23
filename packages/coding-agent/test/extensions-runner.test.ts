@@ -13,12 +13,15 @@ import type { ExtensionActions, ExtensionContextActions, ProviderConfig } from "
 import { KeybindingsManager, type KeyId } from "../src/core/keybindings.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import { createBuiltinSettingsRegistry, inferSettingsNamespace } from "../src/core/settings-registry.js";
 
 describe("ExtensionRunner", () => {
 	let tempDir: string;
 	let extensionsDir: string;
 	let sessionManager: SessionManager;
 	let modelRegistry: ModelRegistry;
+	let settingsManager: SettingsManager;
 	const defaultKeybindings = new KeybindingsManager().getEffectiveConfig();
 
 	beforeEach(() => {
@@ -26,6 +29,7 @@ describe("ExtensionRunner", () => {
 		extensionsDir = path.join(tempDir, "extensions");
 		fs.mkdirSync(extensionsDir);
 		sessionManager = SessionManager.inMemory();
+		settingsManager = SettingsManager.inMemory({ defaultThinkingLevel: "high" });
 		const authStorage = AuthStorage.create(path.join(tempDir, "auth.json"));
 		modelRegistry = ModelRegistry.create(authStorage);
 	});
@@ -285,6 +289,122 @@ describe("ExtensionRunner", () => {
 			expect(shortcuts.has("ctrl+shift+x")).toBe(true);
 
 			warnSpy.mockRestore();
+		});
+	});
+
+	describe("settings integration", () => {
+		it("exposes ctx.settings.get and extension settings registration", async () => {
+			delete (globalThis as { __runnerThinkingObserved?: unknown }).__runnerThinkingObserved;
+			const extCode = `
+				export default function(pi) {
+					pi.settings.registerSection({ id: "demo", label: "Demo" });
+					pi.settings.register({
+						id: "demoToggle",
+						type: "toggle",
+						section: "demo",
+						label: "Demo toggle",
+						storage: { path: "extensions.demo.demoToggle", defaultValue: true },
+					});
+					pi.on("session_start", (_event, ctx) => {
+						globalThis.__runnerThinkingObserved = ctx.settings.get("thinking");
+					});
+				}
+			`;
+			const extensionPath = path.join(extensionsDir, "settings.ts");
+			fs.writeFileSync(extensionPath, extCode);
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir,
+				sessionManager,
+				modelRegistry,
+				settingsManager,
+			);
+			runner.bindCore(extensionActions, extensionContextActions);
+
+			await runner.emit({ type: "session_start", reason: "startup" });
+
+			expect((globalThis as { __runnerThinkingObserved?: unknown }).__runnerThinkingObserved).toBe("off");
+			expect(result.extensions[0]?.settingsDefinitions[0]?.id).toBe("demoToggle");
+		});
+
+		it("scopes ctx.settings.get to the owning extension namespace", async () => {
+			delete (globalThis as { __runnerNamespaceObserved?: Record<string, unknown> }).__runnerNamespaceObserved;
+			const alphaCode = `
+				export default function(pi) {
+					pi.settings.registerSection({ id: "demo", label: "Demo" });
+					pi.settings.register({
+						id: "enabled",
+						type: "toggle",
+						section: "demo",
+						label: "Enabled",
+					});
+					pi.on("session_start", (_event, ctx) => {
+						globalThis.__runnerNamespaceObserved = {
+							...(globalThis.__runnerNamespaceObserved ?? {}),
+							alpha: ctx.settings.get("enabled"),
+						};
+					});
+				}
+			`;
+			const betaCode = `
+				export default function(pi) {
+					pi.settings.registerSection({ id: "demo", label: "Demo" });
+					pi.settings.register({
+						id: "enabled",
+						type: "toggle",
+						section: "demo",
+						label: "Enabled",
+					});
+					pi.on("session_start", (_event, ctx) => {
+						globalThis.__runnerNamespaceObserved = {
+							...(globalThis.__runnerNamespaceObserved ?? {}),
+							beta: ctx.settings.get("enabled"),
+						};
+					});
+				}
+			`;
+			const alphaPath = path.join(extensionsDir, "alpha.ts");
+			const betaPath = path.join(extensionsDir, "beta.ts");
+			fs.writeFileSync(alphaPath, alphaCode);
+			fs.writeFileSync(betaPath, betaCode);
+			settingsManager.setScopedValue("global", "extensionSettings.alpha:enabled", true);
+			settingsManager.setScopedValue("global", "extensionSettings.beta:enabled", false);
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const settingsRegistry = createBuiltinSettingsRegistry();
+			for (const extension of result.extensions) {
+				for (const section of extension.settingsSections) {
+					settingsRegistry.registerSection(section);
+				}
+				for (const definition of extension.settingsDefinitions) {
+					settingsRegistry.register({
+						...definition,
+						namespace: definition.namespace ?? inferSettingsNamespace(definition.sourceInfo, definition.id),
+					});
+				}
+			}
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir,
+				sessionManager,
+				modelRegistry,
+				settingsManager,
+				settingsRegistry,
+			);
+			runner.bindCore(extensionActions, extensionContextActions);
+
+			await runner.emit({ type: "session_start", reason: "startup" });
+
+			expect(
+				(globalThis as { __runnerNamespaceObserved?: Record<string, unknown> }).__runnerNamespaceObserved,
+			).toEqual({
+				alpha: true,
+				beta: false,
+			});
 		});
 	});
 

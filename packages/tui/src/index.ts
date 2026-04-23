@@ -23,7 +23,12 @@ export {
 	type SelectListTheme,
 	type SelectListTruncatePrimaryContext,
 } from "./components/select-list.js";
-export { type SettingItem, SettingsList, type SettingsListTheme } from "./components/settings-list.js";
+export {
+	type SettingItem,
+	SettingsList,
+	type SettingsListOptions,
+	type SettingsListTheme,
+} from "./components/settings-list.js";
 export { Spacer } from "./components/spacer.js";
 export { Text } from "./components/text.js";
 export { TruncatedText } from "./components/truncated-text.js";

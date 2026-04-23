@@ -132,6 +132,76 @@ function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 	return result;
 }
 
+function getPathSegments(path: string): string[] {
+	return path.split(".").filter(Boolean);
+}
+
+function getPathInfo(path: string): { topLevelKey: keyof Settings | undefined; nestedPath: string | undefined } {
+	const segments = getPathSegments(path);
+	return {
+		topLevelKey: segments[0] as keyof Settings | undefined,
+		nestedPath: segments.length > 1 ? segments.slice(1).join(".") : undefined,
+	};
+}
+
+function getValueAtPath(root: unknown, path: string): unknown {
+	const segments = getPathSegments(path);
+	let current: unknown = root;
+	for (const segment of segments) {
+		if (typeof current !== "object" || current === null || !(segment in current)) {
+			return undefined;
+		}
+		current = (current as Record<string, unknown>)[segment];
+	}
+	return current;
+}
+
+function setValueAtPath(root: Record<string, unknown>, path: string, value: unknown): void {
+	const segments = getPathSegments(path);
+	if (segments.length === 0) return;
+
+	let current: Record<string, unknown> = root;
+	for (const segment of segments.slice(0, -1)) {
+		const next = current[segment];
+		if (typeof next !== "object" || next === null || Array.isArray(next)) {
+			current[segment] = {};
+		}
+		current = current[segment] as Record<string, unknown>;
+	}
+
+	current[segments[segments.length - 1]!] = value;
+}
+
+function unsetValueAtPath(root: Record<string, unknown>, path: string): void {
+	const segments = getPathSegments(path);
+	if (segments.length === 0) return;
+
+	const stack: Array<{ parent: Record<string, unknown>; segment: string }> = [];
+	let current: Record<string, unknown> = root;
+	for (const segment of segments.slice(0, -1)) {
+		const next = current[segment];
+		if (typeof next !== "object" || next === null || Array.isArray(next)) {
+			return;
+		}
+		stack.push({ parent: current, segment });
+		current = next as Record<string, unknown>;
+	}
+
+	delete current[segments[segments.length - 1]!];
+
+	for (let index = stack.length - 1; index >= 0; index--) {
+		const entry = stack[index]!;
+		const value = entry.parent[entry.segment];
+		if (typeof value !== "object" || value === null || Array.isArray(value)) {
+			break;
+		}
+		if (Object.keys(value).length > 0) {
+			break;
+		}
+		delete entry.parent[entry.segment];
+	}
+}
+
 export type SettingsScope = "global" | "project";
 
 export interface SettingsStorage {
@@ -468,15 +538,34 @@ export class SettingsManager {
 			const mergedSettings: Settings = { ...currentFileSettings };
 			for (const field of modifiedFields) {
 				const value = snapshotSettings[field];
-				if (modifiedNestedFields.has(field) && typeof value === "object" && value !== null) {
+				if (modifiedNestedFields.has(field)) {
 					const nestedModified = modifiedNestedFields.get(field)!;
-					const baseNested = (currentFileSettings[field] as Record<string, unknown>) ?? {};
-					const inMemoryNested = value as Record<string, unknown>;
+					const baseNestedValue = currentFileSettings[field];
+					const baseNested =
+						typeof baseNestedValue === "object" && baseNestedValue !== null && !Array.isArray(baseNestedValue)
+							? (baseNestedValue as Record<string, unknown>)
+							: {};
+					const inMemoryNestedValue = value;
+					const inMemoryNested =
+						typeof inMemoryNestedValue === "object" &&
+						inMemoryNestedValue !== null &&
+						!Array.isArray(inMemoryNestedValue)
+							? (inMemoryNestedValue as Record<string, unknown>)
+							: {};
 					const mergedNested = { ...baseNested };
 					for (const nestedKey of nestedModified) {
-						mergedNested[nestedKey] = inMemoryNested[nestedKey];
+						const nestedValue = getValueAtPath(inMemoryNested, nestedKey);
+						if (nestedValue === undefined) {
+							unsetValueAtPath(mergedNested, nestedKey);
+						} else {
+							setValueAtPath(mergedNested, nestedKey, nestedValue);
+						}
 					}
-					(mergedSettings as Record<string, unknown>)[field] = mergedNested;
+					if (Object.keys(mergedNested).length === 0) {
+						delete (mergedSettings as Record<string, unknown>)[field];
+					} else {
+						(mergedSettings as Record<string, unknown>)[field] = mergedNested;
+					}
 				} else {
 					(mergedSettings as Record<string, unknown>)[field] = value;
 				}
@@ -526,6 +615,64 @@ export class SettingsManager {
 		const drained = [...this.errors];
 		this.errors = [];
 		return drained;
+	}
+
+	getScopedValue(scope: SettingsScope, path: string): unknown {
+		return getValueAtPath(scope === "global" ? this.globalSettings : this.projectSettings, path);
+	}
+
+	getEffectiveValue(path: string): unknown {
+		return getValueAtPath(this.settings, path);
+	}
+
+	hasScopedValue(scope: SettingsScope, path: string): boolean {
+		return this.getScopedValue(scope, path) !== undefined;
+	}
+
+	setScopedValue(scope: SettingsScope, path: string, value: unknown): void {
+		const target = structuredClone(scope === "global" ? this.globalSettings : this.projectSettings) as Record<
+			string,
+			unknown
+		>;
+		setValueAtPath(target, path, value);
+
+		const { topLevelKey, nestedPath } = getPathInfo(path);
+		if (!topLevelKey) {
+			return;
+		}
+
+		if (scope === "global") {
+			this.globalSettings = target as Settings;
+			this.markModified(topLevelKey, nestedPath);
+			this.save();
+			return;
+		}
+
+		this.markProjectModified(topLevelKey, nestedPath);
+		this.saveProjectSettings(target as Settings);
+	}
+
+	unsetScopedValue(scope: SettingsScope, path: string): void {
+		const target = structuredClone(scope === "global" ? this.globalSettings : this.projectSettings) as Record<
+			string,
+			unknown
+		>;
+		unsetValueAtPath(target, path);
+
+		const { topLevelKey, nestedPath } = getPathInfo(path);
+		if (!topLevelKey) {
+			return;
+		}
+
+		if (scope === "global") {
+			this.globalSettings = target as Settings;
+			this.markModified(topLevelKey, nestedPath);
+			this.save();
+			return;
+		}
+
+		this.markProjectModified(topLevelKey, nestedPath);
+		this.saveProjectSettings(target as Settings);
 	}
 
 	getLastChangelogVersion(): string | undefined {

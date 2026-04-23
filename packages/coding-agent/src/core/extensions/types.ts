@@ -56,6 +56,12 @@ import type {
 	SessionEntry,
 	SessionManager,
 } from "../session-manager.js";
+import type {
+	SettingAugmentation,
+	SettingDefinition,
+	SettingSectionDefinition,
+	SettingValue,
+} from "../settings-registry.js";
 import type { SlashCommandInfo } from "../slash-commands.js";
 import type { SourceInfo } from "../source-info.js";
 import type { BuildSystemPromptOptions } from "../system-prompt.js";
@@ -287,6 +293,10 @@ export interface CompactOptions {
 	onError?: (error: Error) => void;
 }
 
+export interface ExtensionSettingsContext {
+	get(id: string): SettingValue | undefined;
+}
+
 /**
  * Context passed to extension event handlers.
  */
@@ -319,6 +329,8 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/** Read-only access to effective settings values. */
+	readonly settings: ExtensionSettingsContext;
 }
 
 /**
@@ -1052,6 +1064,20 @@ export interface ResolvedCommand extends RegisteredCommand {
 	invocationName: string;
 }
 
+export interface RegisteredSettingsSection extends SettingSectionDefinition {
+	sourceInfo: SourceInfo;
+}
+
+export interface RegisteredSettingDefinition extends SettingDefinition {
+	sourceInfo: SourceInfo;
+	namespace?: string;
+}
+
+export interface RegisteredSettingAugmentation extends SettingAugmentation {
+	sourceInfo: SourceInfo;
+	namespace?: string;
+}
+
 // ============================================================================
 // Extension API
 // ============================================================================
@@ -1143,6 +1169,12 @@ export interface ExtensionAPI {
 
 	/** Get the value of a registered CLI flag. */
 	getFlag(name: string): boolean | string | undefined;
+
+	settings: {
+		registerSection(section: SettingSectionDefinition): void;
+		register(setting: SettingDefinition): void;
+		augment(targetId: string, augmentation: Omit<SettingAugmentation, "targetId">): void;
+	};
 
 	// =========================================================================
 	// Message Rendering
@@ -1375,6 +1407,7 @@ export interface ExtensionShortcut {
 	description?: string;
 	handler: (ctx: ExtensionContext) => Promise<void> | void;
 	extensionPath: string;
+	settingsNamespace: string;
 }
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
@@ -1520,6 +1553,9 @@ export interface Extension {
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;
 	shortcuts: Map<KeyId, ExtensionShortcut>;
+	settingsSections: RegisteredSettingsSection[];
+	settingsDefinitions: RegisteredSettingDefinition[];
+	settingsAugmentations: RegisteredSettingAugmentation[];
 }
 
 /** Result of loading extensions. */

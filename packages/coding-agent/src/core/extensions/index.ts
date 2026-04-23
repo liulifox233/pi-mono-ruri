@@ -67,6 +67,7 @@ export type {
 	ExtensionHandler,
 	// Runtime
 	ExtensionRuntime,
+	ExtensionSettingsContext,
 	ExtensionShortcut,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -103,6 +104,9 @@ export type {
 	ReadToolResultEvent,
 	// Commands
 	RegisteredCommand,
+	RegisteredSettingAugmentation,
+	RegisteredSettingDefinition,
+	RegisteredSettingsSection,
 	RegisteredTool,
 	ReplacedSessionContext,
 	ResolvedCommand,

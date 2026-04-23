@@ -10,6 +10,9 @@ import type { ResourceDiagnostic } from "../diagnostics.js";
 import type { KeybindingsConfig } from "../keybindings.js";
 import type { ModelRegistry } from "../model-registry.js";
 import type { SessionManager } from "../session-manager.js";
+import { SettingsManager } from "../settings-manager.js";
+import { createBuiltinSettingsRegistry, inferSettingsNamespace, type SettingsRegistry } from "../settings-registry.js";
+import type { SourceInfo } from "../source-info.js";
 import type { BuildSystemPromptOptions } from "../system-prompt.js";
 import type {
 	BeforeAgentStartEvent,
@@ -223,6 +226,8 @@ export class ExtensionRunner {
 	private cwd: string;
 	private sessionManager: SessionManager;
 	private modelRegistry: ModelRegistry;
+	private settingsManager: SettingsManager;
+	private settingsRegistry: SettingsRegistry;
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
 	private getModel: () => Model<any> | undefined = () => undefined;
 	private isIdleFn: () => boolean = () => true;
@@ -249,6 +254,8 @@ export class ExtensionRunner {
 		cwd: string,
 		sessionManager: SessionManager,
 		modelRegistry: ModelRegistry,
+		settingsManager: SettingsManager = SettingsManager.inMemory(),
+		settingsRegistry: SettingsRegistry = createBuiltinSettingsRegistry(),
 	) {
 		this.extensions = extensions;
 		this.runtime = runtime;
@@ -256,6 +263,8 @@ export class ExtensionRunner {
 		this.cwd = cwd;
 		this.sessionManager = sessionManager;
 		this.modelRegistry = modelRegistry;
+		this.settingsManager = settingsManager;
+		this.settingsRegistry = settingsRegistry;
 	}
 
 	bindCore(
@@ -565,9 +574,10 @@ export class ExtensionRunner {
 	 * Create an ExtensionContext for use in event handlers and tool execution.
 	 * Context values are resolved at call time, so changes via bindCore/bindUI are reflected.
 	 */
-	createContext(): ExtensionContext {
+	createContext(sourceInfo?: SourceInfo): ExtensionContext {
 		const runner = this;
 		const getModel = this.getModel;
+		const settingsNamespace = sourceInfo ? inferSettingsNamespace(sourceInfo, "extension") : undefined;
 		return {
 			get ui() {
 				runner.assertActive();
@@ -625,16 +635,34 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.getSystemPromptFn();
 			},
+			get settings() {
+				runner.assertActive();
+				return {
+					get(id: string) {
+						runner.assertActive();
+						return runner.settingsRegistry.get(id, {
+							settingsManager: runner.settingsManager,
+							sessionManager: runner.sessionManager,
+							modelRegistry: runner.modelRegistry,
+							model: getModel(),
+							settingsNamespace,
+							runtime: {
+								getThinkingLevel: runner.runtime.getThinkingLevel,
+							},
+						});
+					},
+				};
+			},
 		};
 	}
 
-	createCommandContext(): ExtensionCommandContext {
+	createCommandContext(sourceInfo?: SourceInfo): ExtensionCommandContext {
 		// Use property descriptors instead of object spread so the guarded getters from
 		// createContext() stay lazy. A spread would eagerly read them once and freeze the
 		// old values into the returned object, bypassing stale-instance checks.
 		const context = Object.defineProperties(
 			{},
-			Object.getOwnPropertyDescriptors(this.createContext()),
+			Object.getOwnPropertyDescriptors(this.createContext(sourceInfo)),
 		) as ExtensionCommandContext;
 		context.waitForIdle = () => {
 			this.assertActive();
@@ -673,12 +701,12 @@ export class ExtensionRunner {
 	}
 
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
-		const ctx = this.createContext();
 		let result: SessionBeforeEventResult | undefined;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get(event.type);
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.sourceInfo);
 
 			for (const handler of handlers) {
 				try {
@@ -707,13 +735,13 @@ export class ExtensionRunner {
 	}
 
 	async emitToolResult(event: ToolResultEvent): Promise<ToolResultEventResult | undefined> {
-		const ctx = this.createContext();
 		const currentEvent: ToolResultEvent = { ...event };
 		let modified = false;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("tool_result");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.sourceInfo);
 
 			for (const handler of handlers) {
 				try {
@@ -757,12 +785,12 @@ export class ExtensionRunner {
 	}
 
 	async emitToolCall(event: ToolCallEvent): Promise<ToolCallEventResult | undefined> {
-		const ctx = this.createContext();
 		let result: ToolCallEventResult | undefined;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("tool_call");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.sourceInfo);
 
 			for (const handler of handlers) {
 				const handlerResult = await handler(event, ctx);
@@ -780,11 +808,10 @@ export class ExtensionRunner {
 	}
 
 	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {
-		const ctx = this.createContext();
-
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("user_bash");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.sourceInfo);
 
 			for (const handler of handlers) {
 				try {
@@ -809,12 +836,12 @@ export class ExtensionRunner {
 	}
 
 	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
-		const ctx = this.createContext();
 		let currentMessages = structuredClone(messages);
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("context");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.sourceInfo);
 
 			for (const handler of handlers) {
 				try {
@@ -841,12 +868,12 @@ export class ExtensionRunner {
 	}
 
 	async emitBeforeProviderRequest(payload: unknown): Promise<unknown> {
-		const ctx = this.createContext();
 		let currentPayload = payload;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("before_provider_request");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.sourceInfo);
 
 			for (const handler of handlers) {
 				try {
@@ -881,20 +908,20 @@ export class ExtensionRunner {
 		systemPromptOptions: BuildSystemPromptOptions,
 	): Promise<BeforeAgentStartCombinedResult | undefined> {
 		let currentSystemPrompt = systemPrompt;
-		const ctx = Object.defineProperties(
-			{},
-			Object.getOwnPropertyDescriptors(this.createContext()),
-		) as ExtensionContext;
-		ctx.getSystemPrompt = () => {
-			this.assertActive();
-			return currentSystemPrompt;
-		};
 		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
 		let systemPromptModified = false;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("before_agent_start");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = Object.defineProperties(
+				{},
+				Object.getOwnPropertyDescriptors(this.createContext(ext.sourceInfo)),
+			) as ExtensionContext;
+			ctx.getSystemPrompt = () => {
+				this.assertActive();
+				return currentSystemPrompt;
+			};
 
 			for (const handler of handlers) {
 				try {
@@ -948,7 +975,6 @@ export class ExtensionRunner {
 		promptPaths: Array<{ path: string; extensionPath: string }>;
 		themePaths: Array<{ path: string; extensionPath: string }>;
 	}> {
-		const ctx = this.createContext();
 		const skillPaths: Array<{ path: string; extensionPath: string }> = [];
 		const promptPaths: Array<{ path: string; extensionPath: string }> = [];
 		const themePaths: Array<{ path: string; extensionPath: string }> = [];
@@ -956,6 +982,7 @@ export class ExtensionRunner {
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("resources_discover");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.sourceInfo);
 
 			for (const handler of handlers) {
 				try {
@@ -990,11 +1017,11 @@ export class ExtensionRunner {
 
 	/** Emit input event. Transforms chain, "handled" short-circuits. */
 	async emitInput(text: string, images: ImageContent[] | undefined, source: InputSource): Promise<InputEventResult> {
-		const ctx = this.createContext();
 		let currentText = text;
 		let currentImages = images;
 
 		for (const ext of this.extensions) {
+			const ctx = this.createContext(ext.sourceInfo);
 			for (const handler of ext.handlers.get("input") ?? []) {
 				try {
 					const event: InputEvent = { type: "input", text: currentText, images: currentImages, source };
