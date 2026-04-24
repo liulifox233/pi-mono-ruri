@@ -12,6 +12,9 @@ packages/*/dist-firefox/
 # Environment
 .env
 
+# Lock files (pnpm)
+package-lock.json
+
 # Editor files
 .vscode/
 .zed/

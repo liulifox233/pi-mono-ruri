@@ -8261,7 +8261,7 @@ export const MODELS = {
 				cacheRead: 0.024999999999999998,
 				cacheWrite: 0.08333333333333334,
 			},
-			contextWindow: 1000000,
+			contextWindow: 1048576,
 			maxTokens: 8192,
 		} satisfies Model<"openai-completions">,
 		"google/gemini-2.0-flash-lite-001": {
@@ -10738,9 +10738,9 @@ export const MODELS = {
 			reasoning: false,
 			input: ["text"],
 			cost: {
-				input: 0.15,
+				input: 0.14,
 				output: 0.7999999999999999,
-				cacheRead: 0.11,
+				cacheRead: 0.09,
 				cacheWrite: 0,
 			},
 			contextWindow: 262144,
@@ -11658,11 +11658,11 @@ export const MODELS = {
 			cost: {
 				input: 0.3,
 				output: 0.8999999999999999,
-				cacheRead: 0,
+				cacheRead: 0.049999999999999996,
 				cacheWrite: 0,
 			},
 			contextWindow: 131072,
-			maxTokens: 131072,
+			maxTokens: 24000,
 		} satisfies Model<"openai-completions">,
 		"z-ai/glm-4.7": {
 			id: "z-ai/glm-4.7",
@@ -12459,7 +12459,7 @@ export const MODELS = {
 			cost: {
 				input: 0.14,
 				output: 0.28,
-				cacheRead: 0.014,
+				cacheRead: 0.028,
 				cacheWrite: 0,
 			},
 			contextWindow: 1000000,
