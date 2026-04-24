@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added hosted tool-call handling so provider-native tool activity remains in assistant messages without local execution.
+
 ## [0.70.0] - 2026-04-23
 
 ## [0.69.0] - 2026-04-22

@@ -35,6 +35,7 @@ import type {
 	ExtensionAPI,
 	ExtensionFactory,
 	ExtensionRuntime,
+	HostedToolDefinition,
 	LoadExtensionsResult,
 	MessageRenderer,
 	ProviderConfig,
@@ -206,6 +207,18 @@ function createExtensionAPI(
 		registerTool(tool: ToolDefinition): void {
 			runtime.assertActive();
 			extension.tools.set(tool.name, {
+				definition: tool,
+				sourceInfo: extension.sourceInfo,
+			});
+			runtime.refreshTools();
+		},
+
+		registerHostedTool(tool: HostedToolDefinition): void {
+			runtime.assertActive();
+			if (!extension.hostedTools) {
+				extension.hostedTools = new Map();
+			}
+			extension.hostedTools.set(tool.name, {
 				definition: tool,
 				sourceInfo: extension.sourceInfo,
 			});
@@ -402,6 +415,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		sourceInfo: createSyntheticSourceInfo(extensionPath, { source, baseDir }),
 		handlers: new Map(),
 		tools: new Map(),
+		hostedTools: new Map(),
 		messageRenderers: new Map(),
 		commands: new Map(),
 		flags: new Map(),

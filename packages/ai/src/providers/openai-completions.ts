@@ -35,6 +35,7 @@ import { headersToRecord } from "../utils/headers.js";
 import { parseStreamingJson } from "../utils/json-parse.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
+import { hostedActivityToText } from "./hosted-activity.js";
 import { mapOpenAIReasoningForSimpleStream, openAICompletionsThinkingDescriptor } from "./openai-thinking.js";
 import { buildBaseOptions } from "./simple-options.js";
 import { transformMessages } from "./transform-messages.js";
@@ -766,7 +767,14 @@ export function convertMessages(
 			};
 
 			const assistantTextParts = msg.content
-				.filter(isTextContentBlock)
+				.flatMap((block): TextContent[] => {
+					if (isTextContentBlock(block)) return [block];
+					if (block.type === "hostedToolActivity") {
+						const textBlock = hostedActivityToText(block);
+						return textBlock ? [textBlock] : [];
+					}
+					return [];
+				})
 				.filter((block) => block.text.trim().length > 0)
 				.map(
 					(block) =>
@@ -927,16 +935,18 @@ function convertTools(
 	tools: Tool[],
 	compat: ResolvedOpenAICompletionsCompat,
 ): OpenAI.Chat.Completions.ChatCompletionTool[] {
-	return tools.map((tool) => ({
-		type: "function",
-		function: {
-			name: tool.name,
-			description: tool.description,
-			parameters: tool.parameters as any, // TypeBox already generates JSON Schema
-			// Only include strict if provider supports it. Some reject unknown fields.
-			...(compat.supportsStrictMode !== false && { strict: false }),
-		},
-	}));
+	return tools
+		.filter((tool) => tool.kind !== "hosted")
+		.map((tool) => ({
+			type: "function",
+			function: {
+				name: tool.name,
+				description: tool.description,
+				parameters: tool.parameters as any, // TypeBox already generates JSON Schema
+				// Only include strict if provider supports it. Some reject unknown fields.
+				...(compat.supportsStrictMode !== false && { strict: false }),
+			},
+		}));
 }
 
 function parseChunkUsage(

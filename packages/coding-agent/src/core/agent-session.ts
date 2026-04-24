@@ -23,7 +23,7 @@ import type {
 	AgentTool,
 	ThinkingLevel,
 } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@mariozechner/pi-ai";
+import type { AssistantMessage, HostedTool, ImageContent, Message, Model, TextContent } from "@mariozechner/pi-ai";
 import { isContextOverflow, modelsAreEqual, resetApiProviders } from "@mariozechner/pi-ai";
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
@@ -49,10 +49,12 @@ import {
 	type ExtensionErrorListener,
 	ExtensionRunner,
 	type ExtensionUIContext,
+	type HostedToolInfo,
 	type InputSource,
 	type MessageEndEvent,
 	type MessageStartEvent,
 	type MessageUpdateEvent,
+	type RegisteredHostedTool,
 	type ReplacedSessionContext,
 	type SessionBeforeCompactResult,
 	type SessionBeforeTreeResult,
@@ -227,6 +229,11 @@ interface ToolDefinitionEntry {
 	sourceInfo: SourceInfo;
 }
 
+interface HostedToolDefinitionEntry {
+	definition: RegisteredHostedTool["definition"];
+	sourceInfo: SourceInfo;
+}
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -300,6 +307,7 @@ export class AgentSession {
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
+	private _hostedToolDefinitions: Map<string, HostedToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
 
@@ -778,13 +786,27 @@ export class AgentSession {
 	/**
 	 * Get all configured tools with name, description, parameter schema, and source metadata.
 	 */
-	getAllTools(): ToolInfo[] {
-		return Array.from(this._toolDefinitions.values()).map(({ definition, sourceInfo }) => ({
-			name: definition.name,
-			description: definition.description,
-			parameters: definition.parameters,
-			sourceInfo,
-		}));
+	getAllTools(): Array<ToolInfo | HostedToolInfo> {
+		return [
+			...Array.from(this._toolDefinitions.values()).map(({ definition, sourceInfo }) => ({
+				kind: "client" as const,
+				name: definition.name,
+				description: definition.description,
+				parameters: definition.parameters,
+				sourceInfo,
+			})),
+			...Array.from(this._hostedToolDefinitions.values()).map(({ definition, sourceInfo }) => ({
+				kind: "hosted" as const,
+				name: definition.name,
+				description: definition.description,
+				parameters: definition.parameters,
+				provider: definition.provider,
+				api: definition.api,
+				type: definition.type,
+				display: definition.display,
+				sourceInfo,
+			})),
+		];
 	}
 
 	getToolDefinition(name: string): ToolDefinition | undefined {
@@ -798,12 +820,16 @@ export class AgentSession {
 	 * Changes take effect on the next agent turn.
 	 */
 	setActiveToolsByName(toolNames: string[]): void {
-		const tools: AgentTool[] = [];
+		const tools: Array<AgentTool | HostedTool> = [];
 		const validToolNames: string[] = [];
 		for (const name of toolNames) {
 			const tool = this._toolRegistry.get(name);
+			const hostedTool = this._hostedToolDefinitions.get(name);
 			if (tool) {
 				tools.push(tool);
+				validToolNames.push(name);
+			} else if (hostedTool) {
+				tools.push(hostedTool.definition);
 				validToolNames.push(name);
 			}
 		}
@@ -893,7 +919,9 @@ export class AgentSession {
 	}
 
 	private _rebuildSystemPrompt(toolNames: string[]): string {
-		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
+		const validToolNames = toolNames.filter(
+			(name) => this._toolRegistry.has(name) || this._hostedToolDefinitions.has(name),
+		);
 		const toolSnippets: Record<string, string> = {};
 		const promptGuidelines: string[] = [];
 		for (const name of validToolNames) {
@@ -2238,12 +2266,15 @@ export class AgentSession {
 	}
 
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
-		const previousRegistryNames = new Set(this._toolRegistry.keys());
+		const previousRegistryNames = new Set([...this._toolRegistry.keys(), ...this._hostedToolDefinitions.keys()]);
 		const previousActiveToolNames = this.getActiveToolNames();
 		const allowedToolNames = this._allowedToolNames;
 		const isAllowedTool = (name: string): boolean => !allowedToolNames || allowedToolNames.has(name);
 
 		const registeredTools = this._extensionRunner.getAllRegisteredTools();
+		const registeredHostedTools = this._extensionRunner
+			.getAllRegisteredHostedTools()
+			.filter((tool) => isAllowedTool(tool.definition.name));
 		const allCustomTools = [
 			...registeredTools,
 			...this._customTools.map((definition) => ({
@@ -2269,6 +2300,12 @@ export class AgentSession {
 			});
 		}
 		this._toolDefinitions = definitionRegistry;
+		this._hostedToolDefinitions = new Map(
+			registeredHostedTools.map((tool) => [
+				tool.definition.name,
+				{ definition: tool.definition, sourceInfo: tool.sourceInfo },
+			]),
+		);
 		this._toolPromptSnippets = new Map(
 			Array.from(definitionRegistry.values())
 				.map(({ definition }) => {
@@ -2298,7 +2335,7 @@ export class AgentSession {
 		);
 
 		const toolRegistry = new Map(wrappedBuiltInTools.map((tool) => [tool.name, tool]));
-		for (const tool of wrappedExtensionTools as AgentTool[]) {
+		for (const tool of wrappedExtensionTools) {
 			toolRegistry.set(tool.name, tool);
 		}
 		this._toolRegistry = toolRegistry;
@@ -2308,7 +2345,7 @@ export class AgentSession {
 		).filter((name) => isAllowedTool(name));
 
 		if (allowedToolNames) {
-			for (const toolName of this._toolRegistry.keys()) {
+			for (const toolName of [...this._toolRegistry.keys(), ...this._hostedToolDefinitions.keys()]) {
 				if (allowedToolNames.has(toolName)) {
 					nextActiveToolNames.push(toolName);
 				}
@@ -2317,8 +2354,11 @@ export class AgentSession {
 			for (const tool of wrappedExtensionTools) {
 				nextActiveToolNames.push(tool.name);
 			}
+			for (const tool of registeredHostedTools) {
+				nextActiveToolNames.push(tool.definition.name);
+			}
 		} else if (!options?.activeToolNames) {
-			for (const toolName of this._toolRegistry.keys()) {
+			for (const toolName of [...this._toolRegistry.keys(), ...this._hostedToolDefinitions.keys()]) {
 				if (!previousRegistryNames.has(toolName)) {
 					nextActiveToolNames.push(toolName);
 				}

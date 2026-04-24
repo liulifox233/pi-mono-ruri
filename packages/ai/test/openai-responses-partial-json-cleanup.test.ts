@@ -99,3 +99,67 @@ describe("openai responses partialJson cleanup", () => {
 		expect("partialJson" in toolCallEnd.toolCall).toBe(false);
 	});
 });
+
+async function* createHostedWebSearchEvents(): AsyncIterable<ResponseStreamEvent> {
+	const item = {
+		type: "web_search_call",
+		id: "ws_test",
+		status: "completed",
+		action: { type: "search", query: "pi", queries: ["pi"], sources: [{ type: "url", url: "https://example.com" }] },
+	};
+	yield { type: "response.output_item.added", item } as unknown as ResponseStreamEvent;
+	yield { type: "response.output_item.done", item } as unknown as ResponseStreamEvent;
+	yield {
+		type: "response.completed",
+		response: {
+			id: "resp_test",
+			status: "completed",
+			usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+		},
+	} as unknown as ResponseStreamEvent;
+}
+
+describe("openai responses hosted activity", () => {
+	it("persists hosted output items as hosted activity and replays raw items", async () => {
+		const model: Model<"openai-responses"> = {
+			id: "gpt-5-mini",
+			name: "GPT-5 Mini",
+			api: "openai-responses",
+			provider: "openai",
+			baseUrl: "https://api.openai.com/v1",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+		const output = createOutput(model);
+		const stream = new AssistantMessageEventStream();
+		const pushSpy = vi.spyOn(stream, "push");
+
+		await processResponsesStream(createHostedWebSearchEvents(), output, stream, model);
+
+		expect(output.stopReason).toBe("toolUse");
+		const hostedActivity = output.content[0];
+		expect(hostedActivity?.type).toBe("hostedToolActivity");
+		if (!hostedActivity || hostedActivity.type !== "hostedToolActivity") {
+			throw new Error("Expected hosted activity");
+		}
+		expect(hostedActivity.name).toBe("web_search_call");
+		expect(hostedActivity.status).toBe("completed");
+
+		const emittedEvents = pushSpy.mock.calls.map(([event]) => event as AssistantMessageEvent);
+		expect(emittedEvents.map((event) => event.type)).toContain("hostedtool_end");
+
+		const { convertResponsesMessages } = await import("../src/providers/openai-responses-shared.js");
+		const replay = convertResponsesMessages(
+			model,
+			{
+				messages: [output, { role: "user", content: "continue", timestamp: Date.now() }],
+			},
+			new Set(["openai"]),
+		);
+		expect(replay).toContain(hostedActivity.rawItem);
+		expect(replay).not.toContainEqual(expect.objectContaining({ type: "function_call", name: "web_search_call" }));
+	});
+});

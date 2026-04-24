@@ -93,6 +93,69 @@ describe("AgentSession model and extension characterization", () => {
 		);
 	});
 
+	it("keeps extension hosted tools active when no built-in tools are configured", async () => {
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.registerHostedTool({
+						kind: "hosted",
+						name: "openai_web_search",
+						description: "OpenAI hosted web search",
+						parameters: Type.Object({}),
+						provider: "openai",
+						api: "openai-responses",
+						type: "web_search_preview",
+						payload: { type: "web_search_preview" },
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		expect(harness.session.getActiveToolNames()).toContain("openai_web_search");
+		expect(harness.session.getAllTools()).toContainEqual(
+			expect.objectContaining({
+				kind: "hosted",
+				name: "openai_web_search",
+				type: "web_search_preview",
+			}),
+		);
+	});
+
+	it("keeps disabled hosted tools disabled across tool refresh", async () => {
+		let extensionApi: ExtensionAPI | undefined;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					extensionApi = pi;
+					pi.registerHostedTool({
+						kind: "hosted",
+						name: "openai_web_search",
+						description: "OpenAI hosted web search",
+						parameters: Type.Object({}),
+						provider: "openai",
+						api: "openai-responses",
+						type: "web_search_preview",
+						payload: { type: "web_search_preview" },
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		expect(extensionApi).toBeDefined();
+		extensionApi?.setActiveTools([]);
+		extensionApi?.registerTool({
+			name: "refresh_probe",
+			label: "Refresh probe",
+			description: "Trigger a tool registry refresh",
+			parameters: Type.Object({}),
+			execute: async () => ({ content: [{ type: "text", text: "ok" }], details: undefined }),
+		});
+
+		expect(harness.session.getActiveToolNames()).not.toContain("openai_web_search");
+	});
+
 	it("allows extension tool_call handlers to block tool execution", async () => {
 		const echoTool: AgentTool = {
 			name: "echo",

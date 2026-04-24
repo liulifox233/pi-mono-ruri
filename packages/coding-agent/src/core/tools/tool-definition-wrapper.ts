@@ -7,6 +7,7 @@ export function wrapToolDefinition<TDetails = unknown>(
 	ctxFactory?: () => ExtensionContext,
 ): AgentTool<any, TDetails> {
 	return {
+		kind: "client",
 		name: definition.name,
 		label: definition.label,
 		description: definition.description,

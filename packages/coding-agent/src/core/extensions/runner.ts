@@ -3,7 +3,7 @@
  */
 
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { ImageContent, Model } from "@mariozechner/pi-ai";
+import type { Api, Context, ImageContent, Model } from "@mariozechner/pi-ai";
 import type { KeyId } from "@mariozechner/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.js";
 import type { ResourceDiagnostic } from "../diagnostics.js";
@@ -40,6 +40,7 @@ import type {
 	MessageRenderer,
 	ProviderConfig,
 	RegisteredCommand,
+	RegisteredHostedTool,
 	RegisteredTool,
 	ReplacedSessionContext,
 	ResolvedCommand,
@@ -379,6 +380,19 @@ export class ExtensionRunner {
 		const toolsByName = new Map<string, RegisteredTool>();
 		for (const ext of this.extensions) {
 			for (const tool of ext.tools.values()) {
+				if (!toolsByName.has(tool.definition.name)) {
+					toolsByName.set(tool.definition.name, tool);
+				}
+			}
+		}
+		return Array.from(toolsByName.values());
+	}
+
+	/** Get all hosted tools from all extensions (first registration per name wins). */
+	getAllRegisteredHostedTools() {
+		const toolsByName = new Map<string, RegisteredHostedTool>();
+		for (const ext of this.extensions) {
+			for (const tool of (ext.hostedTools ?? new Map()).values()) {
 				if (!toolsByName.has(tool.definition.name)) {
 					toolsByName.set(tool.definition.name, tool);
 				}
@@ -867,7 +881,7 @@ export class ExtensionRunner {
 		return currentMessages;
 	}
 
-	async emitBeforeProviderRequest(payload: unknown): Promise<unknown> {
+	async emitBeforeProviderRequest(payload: unknown, model?: Model<Api>, context?: Context): Promise<unknown> {
 		let currentPayload = payload;
 
 		for (const ext of this.extensions) {
@@ -880,6 +894,9 @@ export class ExtensionRunner {
 					const event: BeforeProviderRequestEvent = {
 						type: "before_provider_request",
 						payload: currentPayload,
+						model,
+						context,
+						tools: this.runtime.getAllTools(),
 					};
 					const handlerResult = await handler(event, ctx);
 					if (handlerResult !== undefined) {

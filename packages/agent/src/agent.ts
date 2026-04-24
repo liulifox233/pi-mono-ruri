@@ -1,4 +1,5 @@
 import {
+	type HostedTool,
 	type ImageContent,
 	type Message,
 	type Model,
@@ -74,7 +75,7 @@ function createMutableAgentState(
 		get tools() {
 			return tools;
 		},
-		set tools(nextTools: AgentTool<any>[]) {
+		set tools(nextTools: Array<AgentTool<any> | HostedTool>) {
 			tools = nextTools.slice();
 		},
 		get messages() {

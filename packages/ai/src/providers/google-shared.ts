@@ -5,6 +5,7 @@
 import { type Content, FinishReason, FunctionCallingConfigMode, type Part } from "@google/genai";
 import type { Context, ImageContent, Model, StopReason, TextContent, Tool } from "../types.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
+import { hostedActivityToText } from "./hosted-activity.js";
 import { transformMessages } from "./transform-messages.js";
 
 type GoogleApiType = "google-generative-ai" | "google-gemini-cli" | "google-vertex";
@@ -153,6 +154,9 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 							text: sanitizeSurrogates(block.thinking),
 						});
 					}
+				} else if (block.type === "hostedToolActivity") {
+					const textBlock = hostedActivityToText(block);
+					if (textBlock) parts.push({ text: sanitizeSurrogates(textBlock.text) });
 				} else if (block.type === "toolCall") {
 					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.thoughtSignature);
 					// Gemini 3 requires thoughtSignature on all function calls when thinking mode is enabled.
@@ -280,13 +284,15 @@ export function convertTools(
 	if (tools.length === 0) return undefined;
 	return [
 		{
-			functionDeclarations: tools.map((tool) => ({
-				name: tool.name,
-				description: tool.description,
-				...(useParameters
-					? { parameters: sanitizeForOpenApi(tool.parameters as unknown) }
-					: { parametersJsonSchema: tool.parameters }),
-			})),
+			functionDeclarations: tools
+				.filter((tool) => tool.kind !== "hosted")
+				.map((tool) => ({
+					name: tool.name,
+					description: tool.description,
+					...(useParameters
+						? { parameters: sanitizeForOpenApi(tool.parameters as unknown) }
+						: { parametersJsonSchema: tool.parameters }),
+				})),
 		},
 	];
 }

@@ -327,12 +327,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						: undefined,
 			});
 		},
-		onPayload: async (payload, _model) => {
+		onPayload: async (payload, model, context) => {
 			const runner = extensionRunnerRef.current;
 			if (!runner?.hasHandlers("before_provider_request")) {
 				return payload;
 			}
-			return runner.emitBeforeProviderRequest(payload);
+			return runner.emitBeforeProviderRequest(payload, model, context);
 		},
 		onResponse: async (response, _model) => {
 			const runner = extensionRunnerRef.current;

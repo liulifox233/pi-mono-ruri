@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added hosted provider-native tools to the shared tool model and Responses/Anthropic tool conversion, including OpenAI Responses hosted activity parsing.
 - Added provider-owned thinking descriptors so each API can declare supported canonical thinking levels and map them to provider wire values.
 
 ## [0.70.0] - 2026-04-23

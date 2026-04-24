@@ -1,13 +1,14 @@
 import type {
 	AssistantMessage,
 	AssistantMessageEvent,
+	ClientTool,
+	HostedTool,
 	ImageContent,
 	Message,
 	Model,
 	SimpleStreamOptions,
 	streamSimple,
 	TextContent,
-	Tool,
 	ToolResultMessage,
 } from "@mariozechner/pi-ai";
 import type { Static, TSchema } from "typebox";
@@ -269,8 +270,8 @@ export interface AgentState {
 	/** Requested reasoning level for future turns. */
 	thinkingLevel: ThinkingLevel;
 	/** Available tools. Assigning a new array copies the top-level array. */
-	set tools(tools: AgentTool<any>[]);
-	get tools(): AgentTool<any>[];
+	set tools(tools: Array<AgentTool<any> | HostedTool>);
+	get tools(): Array<AgentTool<any> | HostedTool>;
 	/** Conversation transcript. Assigning a new array copies the top-level array. */
 	set messages(messages: AgentMessage[]);
 	get messages(): AgentMessage[];
@@ -305,7 +306,7 @@ export interface AgentToolResult<T> {
 export type AgentToolUpdateCallback<T = any> = (partialResult: AgentToolResult<T>) => void;
 
 /** Tool definition used by the agent runtime. */
-export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> extends Tool<TParameters> {
+export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> extends ClientTool<TParameters> {
 	/** Human-readable label for UI display. */
 	label: string;
 	/**
@@ -337,7 +338,7 @@ export interface AgentContext {
 	/** Transcript visible to the model. */
 	messages: AgentMessage[];
 	/** Tools available for this run. */
-	tools?: AgentTool<any>[];
+	tools?: Array<AgentTool<any> | HostedTool>;
 }
 
 /**

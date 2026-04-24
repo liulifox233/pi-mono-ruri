@@ -8,6 +8,7 @@ import type {
 	ResponseInputContent,
 	ResponseInputImage,
 	ResponseInputText,
+	ResponseOutputItem,
 	ResponseOutputMessage,
 	ResponseReasoningItem,
 	ResponseStreamEvent,
@@ -17,6 +18,7 @@ import type {
 	Api,
 	AssistantMessage,
 	Context,
+	HostedToolActivity,
 	ImageContent,
 	Model,
 	StopReason,
@@ -31,11 +33,51 @@ import type { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { shortHash } from "../utils/hash.js";
 import { parseStreamingJson } from "../utils/json-parse.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
+import { canReplayHostedActivity, hostedActivityToText } from "./hosted-activity.js";
 import { transformMessages } from "./transform-messages.js";
 
 // =============================================================================
 // Utilities
 // =============================================================================
+
+function isHostedOutputItem(item: ResponseOutputItem): boolean {
+	return item.type !== "reasoning" && item.type !== "message" && item.type !== "function_call";
+}
+
+function getHostedOutputArguments(item: ResponseOutputItem): Record<string, unknown> {
+	const raw = item as unknown as Record<string, unknown>;
+	const args: Record<string, unknown> = {};
+	for (const key of ["action", "queries", "query", "results", "outputs", "server_label", "name"]) {
+		if (raw[key] !== undefined) {
+			args[key] = raw[key];
+		}
+	}
+	return args;
+}
+
+function toHostedActivity<TApi extends Api>(model: Model<TApi>, item: ResponseOutputItem): HostedToolActivity {
+	const activity: HostedToolActivity = {
+		type: "hostedToolActivity",
+		id: String((item as unknown as { id?: string }).id ?? item.type),
+		name: item.type,
+		arguments: getHostedOutputArguments(item),
+		provider: model.provider,
+		api: model.api,
+		model: model.id,
+		summary: `Hosted tool ${item.type} completed.`,
+		rawItem: item,
+	};
+	if ("status" in item) activity.status = String(item.status);
+	return activity;
+}
+
+function getHostedReplayItem(activity: HostedToolActivity): ResponseOutputItem | undefined {
+	if (!activity.rawItem || typeof activity.rawItem !== "object") return undefined;
+	const raw = activity.rawItem as { type?: unknown };
+	return typeof raw.type === "string" && raw.type !== "function_call"
+		? (activity.rawItem as ResponseOutputItem)
+		: undefined;
+}
 
 function encodeTextSignatureV1(id: string, phase?: TextSignatureV1["phase"]): string {
 	const payload: TextSignatureV1 = { v: 1, id };
@@ -191,6 +233,24 @@ export function convertResponsesMessages<TApi extends Api>(
 						id: msgId,
 						phase: parsedSignature?.phase,
 					} satisfies ResponseOutputMessage);
+				} else if (block.type === "hostedToolActivity") {
+					const replayItem = canReplayHostedActivity(assistantMsg, model, block)
+						? getHostedReplayItem(block)
+						: undefined;
+					if (replayItem) {
+						output.push(replayItem);
+					} else {
+						const textBlock = hostedActivityToText(block);
+						if (textBlock) {
+							output.push({
+								type: "message",
+								role: "assistant",
+								content: [{ type: "output_text", text: sanitizeSurrogates(textBlock.text), annotations: [] }],
+								status: "completed",
+								id: `msg_${msgIndex}`,
+							} satisfies ResponseOutputMessage);
+						}
+					}
 				} else if (block.type === "toolCall") {
 					const toolCall = block as ToolCall;
 					const [callId, itemIdRaw] = toolCall.id.split("|");
@@ -267,13 +327,19 @@ export function convertResponsesMessages<TApi extends Api>(
 
 export function convertResponsesTools(tools: Tool[], options?: ConvertResponsesToolsOptions): OpenAITool[] {
 	const strict = options?.strict === undefined ? false : options.strict;
-	return tools.map((tool) => ({
-		type: "function",
-		name: tool.name,
-		description: tool.description,
-		parameters: tool.parameters as any, // TypeBox already generates JSON Schema
-		strict,
-	}));
+	return tools.map((tool) => {
+		if (tool.kind === "hosted") {
+			return tool.payload as unknown as OpenAITool;
+		}
+
+		return {
+			type: "function",
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters as any, // TypeBox already generates JSON Schema
+			strict,
+		};
+	});
 }
 
 // =============================================================================
@@ -287,8 +353,18 @@ export async function processResponsesStream<TApi extends Api>(
 	model: Model<TApi>,
 	options?: OpenAIResponsesStreamOptions,
 ): Promise<void> {
-	let currentItem: ResponseReasoningItem | ResponseOutputMessage | ResponseFunctionToolCall | null = null;
-	let currentBlock: ThinkingContent | TextContent | (ToolCall & { partialJson: string }) | null = null;
+	let currentItem:
+		| ResponseReasoningItem
+		| ResponseOutputMessage
+		| ResponseFunctionToolCall
+		| ResponseOutputItem
+		| null = null;
+	let currentBlock:
+		| ThinkingContent
+		| TextContent
+		| (ToolCall & { partialJson: string })
+		| (HostedToolActivity & { partialJson: string })
+		| null = null;
 	const blocks = output.content;
 	const blockIndex = () => blocks.length - 1;
 
@@ -318,6 +394,11 @@ export async function processResponsesStream<TApi extends Api>(
 				};
 				output.content.push(currentBlock);
 				stream.push({ type: "toolcall_start", contentIndex: blockIndex(), partial: output });
+			} else if (isHostedOutputItem(item)) {
+				currentItem = item;
+				currentBlock = { ...toHostedActivity(model, item), partialJson: "" };
+				output.content.push(currentBlock);
+				stream.push({ type: "hostedtool_start", contentIndex: blockIndex(), partial: output });
 			}
 		} else if (event.type === "response.reasoning_summary_part.added") {
 			if (currentItem && currentItem.type === "reasoning") {
@@ -472,6 +553,19 @@ export async function processResponsesStream<TApi extends Api>(
 
 				currentBlock = null;
 				stream.push({ type: "toolcall_end", contentIndex: blockIndex(), toolCall, partial: output });
+			} else if (isHostedOutputItem(item)) {
+				let activity: HostedToolActivity;
+				if (currentBlock?.type === "hostedToolActivity") {
+					currentBlock.arguments = getHostedOutputArguments(item);
+					if ("status" in item) currentBlock.status = String(item.status);
+					currentBlock.rawItem = item;
+					delete (currentBlock as { partialJson?: string }).partialJson;
+					activity = currentBlock;
+				} else {
+					activity = toHostedActivity(model, item);
+				}
+				currentBlock = null;
+				stream.push({ type: "hostedtool_end", contentIndex: blockIndex(), activity, partial: output });
 			}
 		} else if (event.type === "response.completed") {
 			const response = event.response;
@@ -499,7 +593,10 @@ export async function processResponsesStream<TApi extends Api>(
 			}
 			// Map status to stop reason
 			output.stopReason = mapStopReason(response?.status);
-			if (output.content.some((b) => b.type === "toolCall") && output.stopReason === "stop") {
+			const hasToolCall = output.content.some((b) => b.type === "toolCall");
+			const hasHostedToolActivity = output.content.some((b) => b.type === "hostedToolActivity");
+			const hasAssistantText = output.content.some((b) => b.type === "text" && b.text.trim().length > 0);
+			if ((hasToolCall || (hasHostedToolActivity && !hasAssistantText)) && output.stopReason === "stop") {
 				output.stopReason = "toolUse";
 			}
 		} else if (event.type === "error") {

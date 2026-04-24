@@ -9,7 +9,7 @@
  * 2. Use /tools to open the tool selector
  */
 
-import type { ExtensionAPI, ExtensionContext, ToolInfo } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, HostedToolInfo, ToolInfo } from "@mariozechner/pi-coding-agent";
 import { getSettingsListTheme } from "@mariozechner/pi-coding-agent";
 import { Container, type SettingItem, SettingsList } from "@mariozechner/pi-tui";
 
@@ -21,7 +21,7 @@ interface ToolsState {
 export default function toolsExtension(pi: ExtensionAPI) {
 	// Track enabled tools
 	let enabledTools: Set<string> = new Set();
-	let allTools: ToolInfo[] = [];
+	let allTools: Array<ToolInfo | HostedToolInfo> = [];
 
 	// Persist current state
 	function persistState() {

@@ -13,7 +13,9 @@ import type {
 	Api,
 	AssistantMessage,
 	CacheRetention,
+	ClientTool,
 	Context,
+	HostedToolActivity,
 	ImageContent,
 	Message,
 	Model,
@@ -25,6 +27,7 @@ import type {
 	ThinkingContent,
 	Tool,
 	ToolCall,
+	ToolCitation,
 	ToolResultMessage,
 } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
@@ -33,6 +36,7 @@ import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.js"
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
+import { canReplayHostedActivity, hostedActivityToText } from "./hosted-activity.js";
 import { adjustMaxTokensForThinking, buildBaseOptions } from "./simple-options.js";
 import { transformMessages } from "./transform-messages.js";
 
@@ -95,14 +99,100 @@ const ccToolLookup = new Map(claudeCodeTools.map((t) => [t.toLowerCase(), t]));
 
 // Convert tool name to CC canonical casing if it matches (case-insensitive)
 const toClaudeCodeName = (name: string) => ccToolLookup.get(name.toLowerCase()) ?? name;
+function isClientTool(tool: Tool): tool is ClientTool {
+	return tool.kind !== "hosted";
+}
+
 const fromClaudeCodeName = (name: string, tools?: Tool[]) => {
 	if (tools && tools.length > 0) {
 		const lowerName = name.toLowerCase();
-		const matchedTool = tools.find((tool) => tool.name.toLowerCase() === lowerName);
+		const matchedTool = tools.find((tool) => isClientTool(tool) && tool.name.toLowerCase() === lowerName);
 		if (matchedTool) return matchedTool.name;
 	}
 	return name;
 };
+
+function isAnthropicHostedBlock(block: { type: string }): boolean {
+	return block.type === "server_tool_use" || block.type.endsWith("_tool_result") || block.type === "container_upload";
+}
+
+function getAnthropicHostedArguments(block: { type: string } & Record<string, unknown>): Record<string, unknown> {
+	const args: Record<string, unknown> = {};
+	for (const key of ["input", "content", "tool_use_id", "name", "caller"]) {
+		if (block[key] !== undefined) args[key] = block[key];
+	}
+	return args;
+}
+
+function getAnthropicHostedCitations(block: { type: string } & Record<string, unknown>): ToolCitation[] | undefined {
+	if (block.type !== "web_search_tool_result" || !Array.isArray(block.content)) return undefined;
+	const citations = block.content
+		.filter((item): item is { title?: unknown; url?: unknown } => typeof item === "object" && item !== null)
+		.map((item) => ({
+			title: typeof item.title === "string" ? item.title : undefined,
+			url: typeof item.url === "string" ? item.url : undefined,
+		}))
+		.filter((citation) => citation.title !== undefined || citation.url !== undefined);
+	return citations.length > 0 ? citations : undefined;
+}
+
+function toAnthropicHostedActivity(
+	model: Model<"anthropic-messages">,
+	block: { type: string } & Record<string, unknown>,
+): HostedToolActivity {
+	const activity: HostedToolActivity = {
+		type: "hostedToolActivity",
+		id:
+			typeof block.id === "string"
+				? block.id
+				: typeof block.tool_use_id === "string"
+					? block.tool_use_id
+					: block.type,
+		name: typeof block.name === "string" ? block.name : block.type,
+		arguments: getAnthropicHostedArguments(block),
+		provider: model.provider,
+		api: model.api,
+		model: model.id,
+		status: block.type.endsWith("_tool_result") ? "completed" : undefined,
+		summary: `Hosted tool ${typeof block.name === "string" ? block.name : block.type} ${block.type.endsWith("_tool_result") ? "completed" : "started"}.`,
+		rawItem: block,
+		citations: getAnthropicHostedCitations(block),
+	};
+	return activity;
+}
+
+function getActiveAnthropicHostedToolNames(tools?: Tool[]): Set<string> {
+	const names = new Set<string>();
+	for (const tool of tools ?? []) {
+		if (tool.kind !== "hosted") continue;
+		const payloadName = tool.payload.name;
+		if (typeof payloadName === "string") names.add(payloadName);
+		else names.add(tool.name);
+	}
+	return names;
+}
+
+function shouldAcceptAnthropicHostedBlock(
+	block: { type: string } & Record<string, unknown>,
+	activeHostedToolNames: ReadonlySet<string>,
+	acceptedHostedToolUseIds: ReadonlySet<string>,
+): boolean {
+	if (block.type === "server_tool_use") {
+		return typeof block.name === "string" && activeHostedToolNames.has(block.name);
+	}
+	if (block.type.endsWith("_tool_result")) {
+		return typeof block.tool_use_id === "string" && acceptedHostedToolUseIds.has(block.tool_use_id);
+	}
+	return activeHostedToolNames.size > 0;
+}
+
+function getAnthropicHostedReplayBlock(activity: HostedToolActivity): ContentBlockParam | undefined {
+	if (!activity.rawItem || typeof activity.rawItem !== "object") return undefined;
+	const raw = activity.rawItem as { type?: unknown };
+	return typeof raw.type === "string" && isAnthropicHostedBlock(raw as { type: string })
+		? (activity.rawItem as ContentBlockParam)
+		: undefined;
+}
 
 /**
  * Convert content blocks to Anthropic API format
@@ -452,7 +542,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 				isOAuth = created.isOAuthToken;
 			}
 			let params = buildParams(model, context, isOAuth, options);
-			const nextParams = await options?.onPayload?.(params, model);
+			const nextParams = await options?.onPayload?.(params, model, context);
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
 			}
@@ -462,8 +552,13 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
-			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
+			type HostedActivityBlock = HostedToolActivity & { partialJson?: string };
+			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string }) | HostedActivityBlock) & {
+				index: number;
+			};
 			const blocks = output.content as Block[];
+			const activeHostedToolNames = getActiveAnthropicHostedToolNames(context.tools);
+			const acceptedHostedToolUseIds = new Set<string>();
 
 			for await (const event of iterateAnthropicEvents(response, options?.signal)) {
 				if (event.type === "message_start") {
@@ -519,6 +614,20 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 						};
 						output.content.push(block);
 						stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
+					} else if (isAnthropicHostedBlock(event.content_block)) {
+						const rawBlock = event.content_block as unknown as { type: string } & Record<string, unknown>;
+						if (!shouldAcceptAnthropicHostedBlock(rawBlock, activeHostedToolNames, acceptedHostedToolUseIds))
+							continue;
+						if (rawBlock.type === "server_tool_use" && typeof rawBlock.id === "string") {
+							acceptedHostedToolUseIds.add(rawBlock.id);
+						}
+						const block: Block = {
+							...toAnthropicHostedActivity(model, rawBlock),
+							partialJson: rawBlock.type === "server_tool_use" ? "" : undefined,
+							index: event.index,
+						};
+						output.content.push(block);
+						stream.push({ type: "hostedtool_start", contentIndex: output.content.length - 1, partial: output });
 					}
 				} else if (event.type === "content_block_delta") {
 					if (event.delta.type === "text_delta") {
@@ -557,6 +666,13 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 								delta: event.delta.partial_json,
 								partial: output,
 							});
+						} else if (block && block.type === "hostedToolActivity") {
+							block.partialJson = (block.partialJson ?? "") + event.delta.partial_json;
+							const input = parseStreamingJson(block.partialJson);
+							block.arguments = { ...block.arguments, input };
+							if (block.rawItem && typeof block.rawItem === "object") {
+								(block.rawItem as Record<string, unknown>).input = input;
+							}
 						}
 					} else if (event.delta.type === "signature_delta") {
 						const index = blocks.findIndex((b) => b.index === event.index);
@@ -596,6 +712,16 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 								toolCall: block,
 								partial: output,
 							});
+						} else if (block && block.type === "hostedToolActivity") {
+							if (block.partialJson) {
+								const input = parseStreamingJson(block.partialJson);
+								block.arguments = { ...block.arguments, input };
+								if (block.rawItem && typeof block.rawItem === "object") {
+									(block.rawItem as Record<string, unknown>).input = input;
+								}
+							}
+							delete block.partialJson;
+							stream.push({ type: "hostedtool_end", contentIndex: index, activity: block, partial: output });
 						}
 					}
 				} else if (event.type === "message_delta") {
@@ -1025,6 +1151,16 @@ function convertMessages(
 							signature: block.thinkingSignature,
 						});
 					}
+				} else if (block.type === "hostedToolActivity") {
+					const replayBlock = canReplayHostedActivity(msg, model, block)
+						? getAnthropicHostedReplayBlock(block)
+						: undefined;
+					if (replayBlock) {
+						blocks.push(replayBlock);
+					} else {
+						const textBlock = hostedActivityToText(block);
+						if (textBlock) blocks.push({ type: "text", text: sanitizeSurrogates(textBlock.text) });
+					}
 				} else if (block.type === "toolCall") {
 					blocks.push({
 						type: "tool_use",
@@ -1115,6 +1251,13 @@ function convertTools(
 	if (!tools) return [];
 
 	return tools.map((tool, index) => {
+		if (tool.kind === "hosted") {
+			return {
+				...tool.payload,
+				...(cacheControl && index === tools.length - 1 ? { cache_control: cacheControl } : {}),
+			} as Anthropic.Messages.Tool;
+		}
+
 		const schema = tool.parameters as { properties?: unknown; required?: string[] };
 
 		return {

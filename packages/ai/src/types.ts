@@ -100,7 +100,11 @@ export interface StreamOptions {
 	 * Optional callback for inspecting or replacing provider payloads before sending.
 	 * Return undefined to keep the payload unchanged.
 	 */
-	onPayload?: (payload: unknown, model: Model<Api>) => unknown | undefined | Promise<unknown | undefined>;
+	onPayload?: (
+		payload: unknown,
+		model: Model<Api>,
+		context?: Context,
+	) => unknown | undefined | Promise<unknown | undefined>;
 	/**
 	 * Optional callback invoked after an HTTP response is received and before
 	 * its body stream is consumed.
@@ -187,6 +191,28 @@ export interface ToolCall {
 	thoughtSignature?: string; // Google-specific: opaque signature for reusing thought context
 }
 
+export interface HostedToolActivity {
+	type: "hostedToolActivity";
+	id: string;
+	name: string;
+	arguments: Record<string, unknown>;
+	provider: Provider;
+	api: Api;
+	model: string;
+	status?: string;
+	summary?: string;
+	rawItem?: unknown;
+	citations?: ToolCitation[];
+}
+
+export interface ToolCitation {
+	title?: string;
+	url?: string;
+	text?: string;
+	startIndex?: number;
+	endIndex?: number;
+}
+
 export interface Usage {
 	input: number;
 	output: number;
@@ -212,7 +238,7 @@ export interface UserMessage {
 
 export interface AssistantMessage {
 	role: "assistant";
-	content: (TextContent | ThinkingContent | ToolCall)[];
+	content: (TextContent | ThinkingContent | ToolCall | HostedToolActivity)[];
 	api: Api;
 	provider: Provider;
 	model: string;
@@ -237,11 +263,31 @@ export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 
 import type { TSchema } from "typebox";
 
-export interface Tool<TParameters extends TSchema = TSchema> {
+export interface ClientTool<TParameters extends TSchema = TSchema> {
+	kind?: "client";
 	name: string;
 	description: string;
 	parameters: TParameters;
 }
+
+export interface HostedTool<TParameters extends TSchema = TSchema> {
+	kind: "hosted";
+	name: string;
+	description: string;
+	parameters: TParameters;
+	provider?: Provider;
+	api: Api;
+	type: string;
+	payload: Record<string, unknown>;
+	display?: {
+		name?: string;
+		description?: string;
+	};
+	input?: Record<string, unknown>;
+	policy?: Record<string, unknown>;
+}
+
+export type Tool<TParameters extends TSchema = TSchema> = ClientTool<TParameters> | HostedTool<TParameters>;
 
 export interface Context {
 	systemPrompt?: string;
@@ -268,6 +314,8 @@ export type AssistantMessageEvent =
 	| { type: "toolcall_start"; contentIndex: number; partial: AssistantMessage }
 	| { type: "toolcall_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
 	| { type: "toolcall_end"; contentIndex: number; toolCall: ToolCall; partial: AssistantMessage }
+	| { type: "hostedtool_start"; contentIndex: number; partial: AssistantMessage }
+	| { type: "hostedtool_end"; contentIndex: number; activity: HostedToolActivity; partial: AssistantMessage }
 	| { type: "done"; reason: Extract<StopReason, "stop" | "length" | "toolUse">; message: AssistantMessage }
 	| { type: "error"; reason: Extract<StopReason, "aborted" | "error">; error: AssistantMessage };
 

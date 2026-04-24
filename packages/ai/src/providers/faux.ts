@@ -3,6 +3,7 @@ import type {
 	AssistantMessage,
 	AssistantMessageEventStream,
 	Context,
+	HostedToolActivity,
 	ImageContent,
 	Message,
 	Model,
@@ -53,7 +54,7 @@ export interface FauxModelDefinition {
 	maxTokens?: number;
 }
 
-export type FauxContentBlock = TextContent | ThinkingContent | ToolCall;
+export type FauxContentBlock = TextContent | ThinkingContent | ToolCall | HostedToolActivity;
 
 export function fauxText(text: string): TextContent {
 	return { type: "text", text };
@@ -156,7 +157,7 @@ function contentToText(content: string | Array<TextContent | ImageContent>): str
 		.join("\n");
 }
 
-function assistantContentToText(content: Array<TextContent | ThinkingContent | ToolCall>): string {
+function assistantContentToText(content: Array<TextContent | ThinkingContent | ToolCall | HostedToolActivity>): string {
 	return content
 		.map((block) => {
 			if (block.type === "text") {
@@ -368,6 +369,13 @@ async function streamWithDeltas(
 				stream.push({ type: "text_delta", contentIndex: index, delta: chunk, partial: { ...partial } });
 			}
 			stream.push({ type: "text_end", contentIndex: index, content: block.text, partial: { ...partial } });
+			continue;
+		}
+
+		if (block.type === "hostedToolActivity") {
+			partial.content = [...partial.content, block];
+			stream.push({ type: "hostedtool_start", contentIndex: index, partial: { ...partial } });
+			stream.push({ type: "hostedtool_end", contentIndex: index, activity: block, partial: { ...partial } });
 			continue;
 		}
 

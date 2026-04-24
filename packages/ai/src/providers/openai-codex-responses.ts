@@ -150,7 +150,7 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 
 			const accountId = extractAccountId(apiKey);
 			let body = buildRequestBody(model, context, options);
-			const nextBody = await options?.onPayload?.(body, model);
+			const nextBody = await options?.onPayload?.(body, model, context);
 			if (nextBody !== undefined) {
 				body = nextBody as RequestBody;
 			}

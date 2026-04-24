@@ -80,6 +80,9 @@ export type {
 	GetThinkingLevelHandler,
 	GrepToolCallEvent,
 	GrepToolResultEvent,
+	// Tools
+	HostedToolDefinition,
+	HostedToolInfo,
 	// Events - Input
 	InputEvent,
 	InputEventResult,
@@ -104,6 +107,7 @@ export type {
 	ReadToolResultEvent,
 	// Commands
 	RegisteredCommand,
+	RegisteredHostedTool,
 	RegisteredSettingAugmentation,
 	RegisteredSettingDefinition,
 	RegisteredSettingsSection,
@@ -137,7 +141,6 @@ export type {
 	// Events - Tool
 	ToolCallEvent,
 	ToolCallEventResult,
-	// Tools
 	ToolDefinition,
 	// Events - Tool Execution
 	ToolExecutionEndEvent,

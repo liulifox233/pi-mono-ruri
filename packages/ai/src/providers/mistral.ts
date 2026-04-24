@@ -26,6 +26,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { shortHash } from "../utils/hash.js";
 import { parseStreamingJson } from "../utils/json-parse.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
+import { hostedActivityToText } from "./hosted-activity.js";
 import { buildBaseOptions, clampReasoning } from "./simple-options.js";
 import { transformMessages } from "./transform-messages.js";
 
@@ -451,15 +452,17 @@ async function consumeChatStream(
 }
 
 function toFunctionTools(tools: Tool[]): Array<FunctionTool & { type: "function" }> {
-	return tools.map((tool) => ({
-		type: "function",
-		function: {
-			name: tool.name,
-			description: tool.description,
-			parameters: stripSymbolKeys(tool.parameters) as Record<string, unknown>,
-			strict: false,
-		},
-	}));
+	return tools
+		.filter((tool) => tool.kind !== "hosted")
+		.map((tool) => ({
+			type: "function",
+			function: {
+				name: tool.name,
+				description: tool.description,
+				parameters: stripSymbolKeys(tool.parameters) as Record<string, unknown>,
+				strict: false,
+			},
+		}));
 }
 
 function stripSymbolKeys(value: unknown): unknown {
@@ -522,6 +525,11 @@ function toChatMessages(messages: Message[], supportsImages: boolean): ChatCompl
 							thinking: [{ type: "text", text: sanitizeSurrogates(block.thinking) }],
 						});
 					}
+					continue;
+				}
+				if (block.type === "hostedToolActivity") {
+					const textBlock = hostedActivityToText(block);
+					if (textBlock) contentParts.push({ type: "text", text: sanitizeSurrogates(textBlock.text) });
 					continue;
 				}
 				toolCalls.push({

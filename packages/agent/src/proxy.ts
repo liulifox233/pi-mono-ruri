@@ -9,6 +9,7 @@ import {
 	type AssistantMessageEvent,
 	type Context,
 	EventStream,
+	type HostedToolActivity,
 	type Model,
 	parseStreamingJson,
 	type SimpleStreamOptions,
@@ -44,6 +45,8 @@ export type ProxyAssistantMessageEvent =
 	| { type: "toolcall_start"; contentIndex: number; id: string; toolName: string }
 	| { type: "toolcall_delta"; contentIndex: number; delta: string }
 	| { type: "toolcall_end"; contentIndex: number }
+	| { type: "hostedtool_start"; contentIndex: number; activity: HostedToolActivity }
+	| { type: "hostedtool_end"; contentIndex: number; activity: HostedToolActivity }
 	| {
 			type: "done";
 			reason: Extract<StopReason, "stop" | "length" | "toolUse">;
@@ -346,6 +349,19 @@ function processProxyEvent(
 			}
 			return undefined;
 		}
+
+		case "hostedtool_start":
+			partial.content[proxyEvent.contentIndex] = proxyEvent.activity;
+			return { type: "hostedtool_start", contentIndex: proxyEvent.contentIndex, partial };
+
+		case "hostedtool_end":
+			partial.content[proxyEvent.contentIndex] = proxyEvent.activity;
+			return {
+				type: "hostedtool_end",
+				contentIndex: proxyEvent.contentIndex,
+				activity: proxyEvent.activity,
+				partial,
+			};
 
 		case "done":
 			partial.stopReason = proxyEvent.reason;

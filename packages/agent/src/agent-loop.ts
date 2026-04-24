@@ -199,6 +199,8 @@ async function runLoop(
 
 			// Check for tool calls
 			const toolCalls = message.content.filter((c) => c.type === "toolCall");
+			const hasHostedToolActivity = message.content.some((c) => c.type === "hostedToolActivity");
+			const hasAssistantText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0);
 
 			const toolResults: ToolResultMessage[] = [];
 			hasMoreToolCalls = false;
@@ -211,6 +213,8 @@ async function runLoop(
 					currentContext.messages.push(result);
 					newMessages.push(result);
 				}
+			} else if (hasHostedToolActivity && !hasAssistantText) {
+				hasMoreToolCalls = true;
 			}
 
 			await emit({ type: "turn_end", message, toolResults });
@@ -293,6 +297,8 @@ async function streamAssistantResponse(
 			case "toolcall_start":
 			case "toolcall_delta":
 			case "toolcall_end":
+			case "hostedtool_start":
+			case "hostedtool_end":
 				if (partialMessage) {
 					partialMessage = event.partial;
 					context.messages[context.messages.length - 1] = partialMessage;
@@ -342,9 +348,11 @@ async function executeToolCalls(
 	signal: AbortSignal | undefined,
 	emit: AgentEventSink,
 ): Promise<ExecutedToolCallBatch> {
-	const toolCalls = assistantMessage.content.filter((c) => c.type === "toolCall");
+	const toolCalls = assistantMessage.content.filter((c): c is AgentToolCall => c.type === "toolCall");
 	const hasSequentialToolCall = toolCalls.some(
-		(tc) => currentContext.tools?.find((t) => t.name === tc.name)?.executionMode === "sequential",
+		(tc) =>
+			currentContext.tools?.find((t): t is AgentTool<any> => t.kind !== "hosted" && t.name === tc.name)
+				?.executionMode === "sequential",
 	);
 	if (config.toolExecution === "sequential" || hasSequentialToolCall) {
 		return executeToolCallsSequential(currentContext, assistantMessage, toolCalls, config, signal, emit);
@@ -521,7 +529,7 @@ async function prepareToolCall(
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
 ): Promise<PreparedToolCall | ImmediateToolCallOutcome> {
-	const tool = currentContext.tools?.find((t) => t.name === toolCall.name);
+	const tool = currentContext.tools?.find((t): t is AgentTool<any> => t.kind !== "hosted" && t.name === toolCall.name);
 	if (!tool) {
 		return {
 			kind: "immediate",

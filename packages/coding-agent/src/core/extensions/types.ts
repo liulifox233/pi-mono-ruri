@@ -20,6 +20,7 @@ import type {
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
 	Context,
+	HostedTool,
 	ImageContent,
 	Model,
 	OAuthCredentials,
@@ -482,6 +483,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 
 type AnyToolDefinition = ToolDefinition<any, any, any>;
 
+export type HostedToolDefinition = HostedTool;
+
 /**
  * Preserve parameter inference for standalone tool definitions.
  *
@@ -619,6 +622,9 @@ export interface ContextEvent {
 export interface BeforeProviderRequestEvent {
 	type: "before_provider_request";
 	payload: unknown;
+	model?: Model<any>;
+	context?: Context;
+	tools?: readonly (ToolInfo | HostedToolInfo)[];
 }
 
 /** Fired after a provider response is received and before the response stream is consumed. */
@@ -1142,6 +1148,8 @@ export interface ExtensionAPI {
 		tool: ToolDefinition<TParams, TDetails, TState>,
 	): void;
 
+	registerHostedTool(tool: HostedToolDefinition): void;
+
 	// =========================================================================
 	// Command, Shortcut, Flag Registration
 	// =========================================================================
@@ -1226,7 +1234,7 @@ export interface ExtensionAPI {
 	getActiveTools(): string[];
 
 	/** Get all configured tools with parameter schema and source metadata. */
-	getAllTools(): ToolInfo[];
+	getAllTools(): Array<ToolInfo | HostedToolInfo>;
 
 	/** Set the active tools by name. */
 	setActiveTools(toolNames: string[]): void;
@@ -1397,6 +1405,11 @@ export interface RegisteredTool {
 	sourceInfo: SourceInfo;
 }
 
+export interface RegisteredHostedTool {
+	definition: HostedToolDefinition;
+	sourceInfo: SourceInfo;
+}
+
 export interface ExtensionFlag {
 	name: string;
 	description?: string;
@@ -1435,10 +1448,19 @@ export type GetActiveToolsHandler = () => string[];
 
 /** Tool info with name, description, parameter schema, and source metadata */
 export type ToolInfo = Pick<ToolDefinition, "name" | "description" | "parameters"> & {
+	kind: "client";
 	sourceInfo: SourceInfo;
 };
 
-export type GetAllToolsHandler = () => ToolInfo[];
+export type HostedToolInfo = Pick<
+	HostedToolDefinition,
+	"name" | "description" | "parameters" | "provider" | "api" | "type" | "display"
+> & {
+	kind: "hosted";
+	sourceInfo: SourceInfo;
+};
+
+export type GetAllToolsHandler = () => Array<ToolInfo | HostedToolInfo>;
 
 export type GetCommandsHandler = () => SlashCommandInfo[];
 
@@ -1552,6 +1574,7 @@ export interface Extension {
 	sourceInfo: SourceInfo;
 	handlers: Map<string, HandlerFn[]>;
 	tools: Map<string, RegisteredTool>;
+	hostedTools?: Map<string, RegisteredHostedTool>;
 	messageRenderers: Map<string, MessageRenderer>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;

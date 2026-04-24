@@ -81,6 +81,107 @@ function identityConverter(messages: AgentMessage[]): Message[] {
 }
 
 describe("agentLoop with AgentMessage", () => {
+	it("continues hosted tool activity turns without executing local tools", async () => {
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [],
+		};
+		const userPrompt: AgentMessage = createUserMessage("search");
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+		};
+		let calls = 0;
+		const streamFn = () => {
+			calls++;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				const message =
+					calls === 1
+						? createAssistantMessage(
+								[
+									{
+										type: "hostedToolActivity",
+										id: "hosted-1",
+										name: "web_search_preview",
+										arguments: { query: "pi" },
+										provider: "openai",
+										api: "openai-responses",
+										model: "gpt-test",
+										status: "completed",
+									},
+								],
+								"toolUse",
+							)
+						: createAssistantMessage([{ type: "text", text: "final answer" }]);
+				stream.push({ type: "done", reason: calls === 1 ? "toolUse" : "stop", message });
+				stream.end();
+			});
+			return stream;
+		};
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		const messages = await stream.result();
+		expect(calls).toBe(2);
+		expect(messages).toHaveLength(3);
+		expect(messages.some((message) => message.role === "toolResult")).toBe(false);
+		expect(events.some((event) => event.type === "tool_execution_start")).toBe(false);
+		expect(messages[messages.length - 1]).toEqual(expect.objectContaining({ role: "assistant" }));
+	});
+
+	it("continues hosted-only stop turns without assistant text", async () => {
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+		};
+		let calls = 0;
+		const streamFn = () => {
+			calls++;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				const message =
+					calls === 1
+						? createAssistantMessage([
+								{
+									type: "hostedToolActivity",
+									id: "hosted-1",
+									name: "web_search",
+									arguments: { input: { query: "pi" } },
+									provider: "anthropic",
+									api: "anthropic-messages",
+									model: "claude-test",
+								},
+							])
+						: createAssistantMessage([{ type: "text", text: "final answer" }]);
+				stream.push({ type: "done", reason: "stop", message });
+				stream.end();
+			});
+			return stream;
+		};
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("search")], context, config, undefined, streamFn);
+
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		const messages = await stream.result();
+		expect(calls).toBe(2);
+		expect(messages).toHaveLength(3);
+		expect(messages.some((message) => message.role === "toolResult")).toBe(false);
+		expect(events.some((event) => event.type === "tool_execution_start")).toBe(false);
+	});
 	it("should emit events with AgentMessage types", async () => {
 		const context: AgentContext = {
 			systemPrompt: "You are helpful.",
