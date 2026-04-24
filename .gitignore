@@ -41,3 +41,4 @@ plans/
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
 collect.sh
+packages/coding-agent/pnpm-lock.yaml

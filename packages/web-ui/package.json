@@ -18,8 +18,10 @@
 	},
 	"dependencies": {
 		"@lmstudio/sdk": "^1.5.0",
+		"@mariozechner/pi-agent-core": "file:../agent",
 		"@mariozechner/pi-ai": "file:../ai",
 		"@mariozechner/pi-tui": "file:../tui",
+		"highlight.js": "^11.11.1",
 		"typebox": "^1.1.24",
 		"docx-preview": "^0.3.7",
 		"jszip": "^3.10.1",

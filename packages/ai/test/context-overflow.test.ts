@@ -542,11 +542,13 @@ describe("Context overflow error handling", () => {
 	// Ollama (local)
 	// =============================================================================
 
-	// Check if ollama is installed and local LLM tests are enabled
+	// Check if ollama is installed and the specific model is available
 	let ollamaInstalled = false;
 	if (!process.env.PI_NO_LOCAL_LLM) {
 		try {
 			execSync("which ollama", { stdio: "ignore" });
+			// Also verify the model is available
+			execSync("ollama list | grep -q 'gpt-oss:20b'", { stdio: "ignore" });
 			ollamaInstalled = true;
 		} catch {
 			ollamaInstalled = false;
@@ -558,19 +560,6 @@ describe("Context overflow error handling", () => {
 		let model: Model<"openai-completions">;
 
 		beforeAll(async () => {
-			// Check if model is available, if not pull it
-			try {
-				execSync("ollama list | grep -q 'gpt-oss:20b'", { stdio: "ignore" });
-			} catch {
-				console.log("Pulling gpt-oss:20b model for Ollama overflow tests...");
-				try {
-					execSync("ollama pull gpt-oss:20b", { stdio: "inherit" });
-				} catch (_e) {
-					console.warn("Failed to pull gpt-oss:20b model, tests will be skipped");
-					return;
-				}
-			}
-
 			// Start ollama server
 			ollamaProcess = spawn("ollama", ["serve"], {
 				detached: false,
