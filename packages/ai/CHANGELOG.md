@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added provider-owned thinking descriptors so each API can declare supported canonical thinking levels and map them to provider wire values.
+
 ## [0.70.0] - 2026-04-23
 
 ### Added

@@ -1,7 +1,6 @@
 import OpenAI from "openai";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { getEnvApiKey } from "../env-api-keys.js";
-import { supportsXhigh } from "../models.js";
 import type {
 	Api,
 	AssistantMessage,
@@ -18,7 +17,8 @@ import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { headersToRecord } from "../utils/headers.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.js";
-import { buildBaseOptions, clampReasoning } from "./simple-options.js";
+import { mapOpenAIReasoningForSimpleStream, openAIResponsesThinkingDescriptor } from "./openai-thinking.js";
+import { buildBaseOptions } from "./simple-options.js";
 
 const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
 
@@ -146,11 +146,15 @@ export const streamSimpleOpenAIResponses: StreamFunction<"openai-responses", Sim
 	}
 
 	const base = buildBaseOptions(model, options, apiKey);
-	const reasoningEffort = supportsXhigh(model) ? options?.reasoning : clampReasoning(options?.reasoning);
+	const reasoningEffort = mapOpenAIReasoningForSimpleStream(
+		openAIResponsesThinkingDescriptor,
+		model,
+		options?.reasoning,
+	);
 
 	return streamOpenAIResponses(model, context, {
 		...base,
-		reasoningEffort,
+		reasoningEffort: reasoningEffort as OpenAIResponsesOptions["reasoningEffort"],
 	} satisfies OpenAIResponsesOptions);
 };
 

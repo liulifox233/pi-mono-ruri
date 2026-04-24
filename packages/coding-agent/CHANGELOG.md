@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added provider-driven thinking settings so `/settings` exposes only the thinking levels supported by the current model.
+
 ## [0.70.0] - 2026-04-23
 
 ### New Features

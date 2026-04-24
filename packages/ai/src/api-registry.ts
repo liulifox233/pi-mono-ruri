@@ -3,6 +3,7 @@ import type {
 	AssistantMessageEventStream,
 	Context,
 	Model,
+	ProviderThinkingDescriptor,
 	SimpleStreamOptions,
 	StreamFunction,
 	StreamOptions,
@@ -24,12 +25,14 @@ export interface ApiProvider<TApi extends Api = Api, TOptions extends StreamOpti
 	api: TApi;
 	stream: StreamFunction<TApi, TOptions>;
 	streamSimple: StreamFunction<TApi, SimpleStreamOptions>;
+	thinking?: ProviderThinkingDescriptor<TApi>;
 }
 
 interface ApiProviderInternal {
 	api: Api;
 	stream: ApiStreamFunction;
 	streamSimple: ApiStreamSimpleFunction;
+	thinking?: ProviderThinkingDescriptor<Api>;
 }
 
 type RegisteredApiProvider = {
@@ -63,6 +66,23 @@ function wrapStreamSimple<TApi extends Api>(
 	};
 }
 
+function wrapThinkingDescriptor<TApi extends Api>(
+	api: TApi,
+	descriptor: ProviderThinkingDescriptor<TApi>,
+): ProviderThinkingDescriptor<Api> {
+	const assertModel = (model: Model<Api>): Model<TApi> => {
+		if (model.api !== api) {
+			throw new Error(`Mismatched api: ${model.api} expected ${api}`);
+		}
+		return model as Model<TApi>;
+	};
+
+	return {
+		getOptions: (model) => descriptor.getOptions.call(descriptor, assertModel(model)),
+		toProviderValue: (value, model) => descriptor.toProviderValue.call(descriptor, value, assertModel(model)),
+	};
+}
+
 export function registerApiProvider<TApi extends Api, TOptions extends StreamOptions>(
 	provider: ApiProvider<TApi, TOptions>,
 	sourceId?: string,
@@ -72,6 +92,7 @@ export function registerApiProvider<TApi extends Api, TOptions extends StreamOpt
 			api: provider.api,
 			stream: wrapStream(provider.api, provider.stream),
 			streamSimple: wrapStreamSimple(provider.api, provider.streamSimple),
+			thinking: provider.thinking ? wrapThinkingDescriptor(provider.api, provider.thinking) : undefined,
 		},
 		sourceId,
 	});

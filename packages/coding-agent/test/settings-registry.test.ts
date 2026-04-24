@@ -1,3 +1,4 @@
+import { type Api, type Model, registerApiProvider, unregisterApiProviders } from "@mariozechner/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import {
@@ -6,6 +7,38 @@ import {
 	type SettingOption,
 	SettingsRegistry,
 } from "../src/core/settings-registry.js";
+
+const openAi54Model = {
+	id: "gpt-5.4",
+	name: "GPT-5.4",
+	api: "openai-responses",
+	provider: "openai",
+	baseUrl: "https://api.openai.com/v1",
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 200000,
+	maxTokens: 32000,
+} satisfies Model<"openai-responses">;
+
+const openAi51Model = {
+	...openAi54Model,
+	id: "gpt-5.1",
+	name: "GPT-5.1",
+} satisfies Model<"openai-responses">;
+
+const anthropic46Model = {
+	id: "claude-opus-4-6",
+	name: "Claude Opus 4.6",
+	api: "anthropic-messages",
+	provider: "anthropic",
+	baseUrl: "https://api.anthropic.com",
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 200000,
+	maxTokens: 32000,
+} satisfies Model<"anthropic-messages">;
 
 describe("SettingsRegistry", () => {
 	it("applies and reads nested child settings", () => {
@@ -65,7 +98,7 @@ describe("SettingsRegistry", () => {
 			options: [{ value: "safe" }, { value: "fast" }],
 		});
 		registry.augment({
-			targetId: "thinking",
+			targetId: "theme",
 			description: "Extended by provider settings.",
 			namespace: "demo",
 			children: [
@@ -82,18 +115,21 @@ describe("SettingsRegistry", () => {
 			options: [{ value: "ultra" }],
 		});
 
-		const sections = registry.resolve({ settingsManager }, "global");
+		const sections = registry.resolve({ settingsManager, availableThemes: ["dark"] }, "global");
 		const providerSection = sections.find((section) => section.id === "provider");
-		const thinking = sections.flatMap((section) => section.items).find((item) => item.id === "thinking");
+		const theme = sections.flatMap((section) => section.items).find((item) => item.id === "theme");
 
 		expect(providerSection?.items[0]?.id).toBe("providerMode");
-		expect(thinking?.options.map((option) => option.value)).toContain("ultra");
-		expect(thinking?.children[0]?.id).toBe("demo:thinking/providerThinkingEffort");
-		expect(thinking?.description).toBe("Extended by provider settings.");
+		expect(theme?.options.map((option) => option.value)).toContain("ultra");
+		expect(theme?.children[0]?.id).toBe("demo:theme/providerThinkingEffort");
+		expect(theme?.description).toBe("Extended by provider settings.");
 
-		registry.apply("demo:thinking/providerThinkingEffort", "high", "global", { settingsManager });
+		registry.apply("demo:theme/providerThinkingEffort", "high", "global", {
+			settingsManager,
+			availableThemes: ["dark"],
+		});
 
-		expect(settingsManager.getEffectiveValue("extensionSettings.demo:thinking/providerThinkingEffort")).toBe("high");
+		expect(settingsManager.getEffectiveValue("extensionSettings.demo:theme/providerThinkingEffort")).toBe("high");
 		expect(registry.get("providerThinkingEffort", { settingsManager, settingsNamespace: "demo" })).toBe("high");
 	});
 
@@ -297,7 +333,7 @@ describe("SettingsRegistry", () => {
 
 		registry.unset("thinking", "project", {
 			settingsManager,
-			availableThinkingLevels: ["off", "medium", "high"],
+			model: openAi54Model,
 			runtime: {
 				getThinkingLevel: () => "high",
 				setThinkingLevel,
@@ -357,17 +393,101 @@ describe("SettingsRegistry", () => {
 		expect(registry.get("enabled", { settingsManager, settingsNamespace: "beta" })).toBe(false);
 	});
 
-	it("prefers the live thinking level over persisted defaults when runtime state is provided", () => {
+	it("resolves thinking from canonical defaults and model capabilities", () => {
 		const registry = createBuiltinSettingsRegistry();
 		const settingsManager = SettingsManager.inMemory({ defaultThinkingLevel: "high" });
 
 		expect(
 			registry.get("thinking", {
 				settingsManager,
-				availableThinkingLevels: ["off", "high"],
+				model: openAi54Model,
 				runtime: { getThinkingLevel: () => "off" },
 			}),
-		).toBe("off");
+		).toBe("high");
+	});
+
+	it("shows xhigh only for supported OpenAI GPT models", () => {
+		const registry = createBuiltinSettingsRegistry();
+		const settingsManager = SettingsManager.inMemory();
+
+		const gpt54 = registry
+			.resolve({ settingsManager, model: openAi54Model }, "global")
+			.flatMap((section) => section.items)
+			.find((item) => item.id === "thinking");
+		const gpt51 = registry
+			.resolve({ settingsManager, model: openAi51Model }, "global")
+			.flatMap((section) => section.items)
+			.find((item) => item.id === "thinking");
+
+		expect(gpt54?.options.map((option) => option.value)).toContain("xhigh");
+		expect(gpt51?.options.map((option) => option.value)).not.toContain("xhigh");
+	});
+
+	it("stores canonical thinking levels even when provider wire values differ", () => {
+		const registry = createBuiltinSettingsRegistry();
+		const settingsManager = SettingsManager.inMemory({ defaultThinkingLevel: "high" });
+		const setThinkingLevel = vi.fn();
+
+		const anthropicSetting = registry
+			.resolve({ settingsManager, model: anthropic46Model }, "global")
+			.flatMap((section) => section.items)
+			.find((item) => item.id === "thinking");
+
+		expect(anthropicSetting?.effectiveValue).toBe("high");
+
+		registry.apply("thinking", "xhigh", "global", {
+			settingsManager,
+			model: anthropic46Model,
+			runtime: { setThinkingLevel },
+		});
+
+		expect(settingsManager.getEffectiveValue("defaultThinkingLevel")).toBe("xhigh");
+		expect(setThinkingLevel).toHaveBeenCalledWith("xhigh", "global");
+	});
+
+	it("resolves provider thinking settings from providers registered after registry creation", () => {
+		const registry = createBuiltinSettingsRegistry();
+		const settingsManager = SettingsManager.inMemory();
+		const sourceId = "test:dynamic-thinking";
+		const stream = () => undefined as never;
+		const customModel = {
+			id: "demo-reasoner",
+			name: "Demo Reasoner",
+			api: "demo-thinking" as Api,
+			provider: "demo-provider",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1000,
+			maxTokens: 1000,
+		} satisfies Model<Api>;
+
+		registerApiProvider(
+			{
+				api: "demo-thinking" as Api,
+				stream,
+				streamSimple: stream,
+				thinking: {
+					getOptions: () => [{ level: "off" }, { level: "high", label: "Turbo" }],
+					toProviderValue: (value) => (value === "off" ? undefined : "turbo"),
+				},
+			},
+			sourceId,
+		);
+
+		try {
+			const dynamicSetting = registry
+				.resolve({ settingsManager, model: customModel }, "global")
+				.flatMap((section) => section.items)
+				.find((item) => item.id === "thinking");
+
+			expect(dynamicSetting?.label).toBe("Thinking");
+			expect(dynamicSetting?.options.map((option) => option.value)).toEqual(["off", "high"]);
+			expect(dynamicSetting?.options.find((option) => option.value === "high")?.label).toBe("Turbo");
+		} finally {
+			unregisterApiProviders(sourceId);
+		}
 	});
 
 	it("preserves declared option order", () => {

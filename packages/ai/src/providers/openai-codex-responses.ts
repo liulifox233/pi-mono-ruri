@@ -21,7 +21,6 @@ if (typeof process !== "undefined" && (process.versions?.node || process.version
 }
 
 import { getEnvApiKey } from "../env-api-keys.js";
-import { supportsXhigh } from "../models.js";
 import type {
 	Api,
 	AssistantMessage,
@@ -35,7 +34,8 @@ import type {
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { headersToRecord } from "../utils/headers.js";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.js";
-import { buildBaseOptions, clampReasoning } from "./simple-options.js";
+import { mapOpenAIReasoningForSimpleStream, openAICodexResponsesThinkingDescriptor } from "./openai-thinking.js";
+import { buildBaseOptions } from "./simple-options.js";
 
 // ============================================================================
 // Configuration
@@ -298,11 +298,15 @@ export const streamSimpleOpenAICodexResponses: StreamFunction<"openai-codex-resp
 	}
 
 	const base = buildBaseOptions(model, options, apiKey);
-	const reasoningEffort = supportsXhigh(model) ? options?.reasoning : clampReasoning(options?.reasoning);
+	const reasoningEffort = mapOpenAIReasoningForSimpleStream(
+		openAICodexResponsesThinkingDescriptor,
+		model,
+		options?.reasoning,
+	);
 
 	return streamOpenAICodexResponses(model, context, {
 		...base,
-		reasoningEffort,
+		reasoningEffort: reasoningEffort as OpenAICodexResponsesOptions["reasoningEffort"],
 	} satisfies OpenAICodexResponsesOptions);
 };
 

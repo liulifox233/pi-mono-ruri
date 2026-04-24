@@ -900,6 +900,34 @@ describe("ModelRegistry", () => {
 			expect(registry.find("demo-provider", "demo-model")).toBeDefined();
 		});
 
+		test("reasoning-capable custom APIs require a thinking descriptor", () => {
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+
+			expect(() =>
+				registry.registerProvider("reasoning-provider", {
+					baseUrl: "https://provider.test/v1",
+					apiKey: "TEST_KEY",
+					api: "demo-reasoning" as Api,
+					streamSimple: (() => {
+						throw new Error("should not run");
+					}) as never,
+					models: [
+						{
+							id: "reasoner",
+							name: "Reasoner",
+							reasoning: true,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 128000,
+							maxTokens: 4096,
+						},
+					],
+				}),
+			).toThrow(
+				'Provider reasoning-provider, model reasoner: reasoning-capable models require a thinking descriptor for API "demo-reasoning".',
+			);
+		});
+
 		test("unregisterProvider removes custom OAuth provider and restores built-in OAuth provider", () => {
 			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
 
@@ -951,6 +979,23 @@ describe("ModelRegistry", () => {
 					error instanceof Error && error.message === "custom streamSimple override";
 			}
 			expect(threwCustomOverrideAfterUnregister).toBe(false);
+		});
+
+		test("streamSimple overrides preserve the existing thinking descriptor when none is provided", () => {
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+
+			registry.registerProvider("stream-override-provider", {
+				api: "openai-completions",
+				streamSimple: () => {
+					throw new Error("custom streamSimple override");
+				},
+			});
+
+			const thinking = getApiProvider("openai-completions")?.thinking;
+			expect(thinking).toBeDefined();
+			expect(thinking?.getOptions(openAiModel).map((option) => option.level)).toContain("high");
+
+			registry.unregisterProvider("stream-override-provider");
 		});
 	});
 

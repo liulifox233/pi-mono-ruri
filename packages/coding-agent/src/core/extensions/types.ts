@@ -24,6 +24,7 @@ import type {
 	Model,
 	OAuthCredentials,
 	OAuthLoginCallbacks,
+	ProviderThinkingDescriptor,
 	SimpleStreamOptions,
 	TextContent,
 	ToolResultMessage,
@@ -1337,6 +1338,8 @@ export interface ProviderConfig {
 	api?: Api;
 	/** Optional streamSimple handler for custom APIs. */
 	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
+	/** Optional provider-owned thinking descriptor used to define canonical thinking levels for reasoning models. */
+	thinking?: ProviderThinkingDescriptor<Api>;
 	/** Custom headers to include in requests. */
 	headers?: Record<string, string>;
 	/** If true, adds Authorization: Bearer header with the resolved API key. */

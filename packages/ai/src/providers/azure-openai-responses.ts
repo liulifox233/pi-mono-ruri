@@ -1,7 +1,6 @@
 import { AzureOpenAI } from "openai";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { getEnvApiKey } from "../env-api-keys.js";
-import { supportsXhigh } from "../models.js";
 import type {
 	Api,
 	AssistantMessage,
@@ -14,7 +13,8 @@ import type {
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { headersToRecord } from "../utils/headers.js";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.js";
-import { buildBaseOptions, clampReasoning } from "./simple-options.js";
+import { azureOpenAIResponsesThinkingDescriptor, mapOpenAIReasoningForSimpleStream } from "./openai-thinking.js";
+import { buildBaseOptions } from "./simple-options.js";
 
 const DEFAULT_AZURE_API_VERSION = "v1";
 const AZURE_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode", "azure-openai-responses"]);
@@ -136,11 +136,15 @@ export const streamSimpleAzureOpenAIResponses: StreamFunction<"azure-openai-resp
 	}
 
 	const base = buildBaseOptions(model, options, apiKey);
-	const reasoningEffort = supportsXhigh(model) ? options?.reasoning : clampReasoning(options?.reasoning);
+	const reasoningEffort = mapOpenAIReasoningForSimpleStream(
+		azureOpenAIResponsesThinkingDescriptor,
+		model,
+		options?.reasoning,
+	);
 
 	return streamAzureOpenAIResponses(model, context, {
 		...base,
-		reasoningEffort,
+		reasoningEffort: reasoningEffort as AzureOpenAIResponsesOptions["reasoningEffort"],
 	} satisfies AzureOpenAIResponsesOptions);
 };
 

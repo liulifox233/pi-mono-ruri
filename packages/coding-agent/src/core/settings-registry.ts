@@ -1,6 +1,7 @@
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { ModelRegistry } from "./model-registry.js";
+import { createThinkingSettingDefinition } from "./provider-thinking-settings.js";
 import type { SessionManager } from "./session-manager.js";
 import type { SettingsManager, SettingsScope } from "./settings-manager.js";
 import type { SourceInfo } from "./source-info.js";
@@ -72,6 +73,7 @@ export interface SettingDefinition {
 	children?: SettingDefinition[] | ((ctx: SettingsRuntimeContext) => SettingDefinition[]);
 	visible?: (ctx: SettingsRuntimeContext) => boolean;
 	getValue?: (ctx: SettingsRuntimeContext) => SettingValue | undefined;
+	getScopedValue?: (ctx: SettingsRuntimeContext, scope: SettingsScope) => SettingValue | undefined;
 	apply?: (
 		value: SettingValue,
 		ctx: SettingsRuntimeContext,
@@ -614,6 +616,9 @@ export class SettingsRegistry {
 		ctx: SettingsRuntimeContext,
 		scope: SettingsScope,
 	): SettingValue | undefined {
+		if (definition.getScopedValue) {
+			return definition.getScopedValue(ctx, scope);
+		}
 		const path = definition.storage?.path ?? defaultStoragePath(definition);
 		if (!path) {
 			return this.getEffectiveDefinitionValue(definition, ctx);
@@ -638,21 +643,7 @@ export function createBuiltinSettingsRegistry(): SettingsRegistry {
 
 	const register = (definition: SettingDefinition) => registry.register(definition);
 
-	register({
-		id: "thinking",
-		type: "select",
-		section: "model",
-		order: 10,
-		label: "Thinking level",
-		description: "Reasoning depth for thinking-capable models.",
-		storage: { path: "defaultThinkingLevel", defaultValue: "off" },
-		options: (ctx) => (ctx.availableThinkingLevels ?? ["off"]).map((level) => ({ value: level })),
-		getValue: (ctx) => ctx.runtime?.getThinkingLevel?.() ?? ctx.settingsManager.getDefaultThinkingLevel() ?? "off",
-		apply: (value, ctx, scope) => {
-			ctx.runtime?.setThinkingLevel?.(value as ThinkingLevel, scope);
-			return undefined;
-		},
-	});
+	register(createThinkingSettingDefinition());
 	register({
 		id: "transport",
 		type: "select",

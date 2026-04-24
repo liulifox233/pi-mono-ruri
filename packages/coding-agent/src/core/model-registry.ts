@@ -7,6 +7,7 @@ import {
 	type Api,
 	type AssistantMessageEventStream,
 	type Context,
+	getApiProvider,
 	getModels,
 	getProviders,
 	type KnownProvider,
@@ -14,6 +15,7 @@ import {
 	type OAuthProviderInterface,
 	type OpenAICompletionsCompat,
 	type OpenAIResponsesCompat,
+	type ProviderThinkingDescriptor,
 	registerApiProvider,
 	resetApiProviders,
 	type SimpleStreamOptions,
@@ -748,9 +750,25 @@ export class ModelRegistry {
 		this.refresh();
 	}
 
+	private getThinkingDescriptorForApi(
+		api: Api,
+		override?: ProviderThinkingDescriptor<Api>,
+	): ProviderThinkingDescriptor<Api> | undefined {
+		return override ?? getApiProvider(api)?.thinking;
+	}
+
 	private validateProviderConfig(providerName: string, config: ProviderConfigInput): void {
 		if (config.streamSimple && !config.api) {
 			throw new Error(`Provider ${providerName}: "api" is required when registering streamSimple.`);
+		}
+
+		if (config.streamSimple && config.api) {
+			const overridesReasoningApi = this.models.some((model) => model.api === config.api && model.reasoning);
+			if (overridesReasoningApi && !this.getThinkingDescriptorForApi(config.api, config.thinking)) {
+				throw new Error(
+					`Provider ${providerName}: reasoning-capable API "${config.api}" requires a thinking descriptor.`,
+				);
+			}
 		}
 
 		if (!config.models || config.models.length === 0) {
@@ -769,6 +787,14 @@ export class ModelRegistry {
 			if (!api) {
 				throw new Error(`Provider ${providerName}, model ${modelDef.id}: no "api" specified.`);
 			}
+			if (
+				modelDef.reasoning &&
+				!this.getThinkingDescriptorForApi(api as Api, api === config.api ? config.thinking : undefined)
+			) {
+				throw new Error(
+					`Provider ${providerName}, model ${modelDef.id}: reasoning-capable models require a thinking descriptor for API "${api}".`,
+				);
+			}
 		}
 	}
 
@@ -785,11 +811,13 @@ export class ModelRegistry {
 
 		if (config.streamSimple) {
 			const streamSimple = config.streamSimple;
+			const existingThinking = getApiProvider(config.api!)?.thinking;
 			registerApiProvider(
 				{
 					api: config.api!,
 					stream: (model, context, options) => streamSimple(model, context, options as SimpleStreamOptions),
 					streamSimple,
+					thinking: config.thinking ?? existingThinking,
 				},
 				`provider:${providerName}`,
 			);
@@ -850,6 +878,7 @@ export interface ProviderConfigInput {
 	apiKey?: string;
 	api?: Api;
 	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
+	thinking?: ProviderThinkingDescriptor<Api>;
 	headers?: Record<string, string>;
 	authHeader?: boolean;
 	/** OAuth provider for /login support */

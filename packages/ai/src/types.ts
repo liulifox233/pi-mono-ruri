@@ -44,6 +44,18 @@ export type KnownProvider =
 export type Provider = KnownProvider | string;
 
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
+export type SelectableThinkingLevel = "off" | ThinkingLevel;
+
+export interface ProviderThinkingOption {
+	level: SelectableThinkingLevel;
+	label?: string;
+	description?: string;
+}
+
+export interface ProviderThinkingDescriptor<TApi extends Api = Api> {
+	getOptions(model: Model<TApi>): ProviderThinkingOption[];
+	toProviderValue(value: SelectableThinkingLevel, model: Model<TApi>): string | undefined;
+}
 
 /** Token budgets for each thinking level (token-based providers only) */
 export interface ThinkingBudgets {

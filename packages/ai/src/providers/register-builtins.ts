@@ -12,14 +12,28 @@ import type {
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import type { BedrockOptions } from "./amazon-bedrock.js";
 import type { AnthropicOptions } from "./anthropic.js";
+import { anthropicThinkingDescriptor } from "./anthropic-thinking.js";
 import type { AzureOpenAIResponsesOptions } from "./azure-openai-responses.js";
+import { bedrockThinkingDescriptor } from "./bedrock-thinking.js";
 import type { GoogleOptions } from "./google.js";
 import type { GoogleGeminiCliOptions } from "./google-gemini-cli.js";
+import {
+	googleGeminiCliThinkingDescriptor,
+	googleThinkingDescriptor,
+	googleVertexThinkingDescriptor,
+} from "./google-thinking.js";
 import type { GoogleVertexOptions } from "./google-vertex.js";
 import type { MistralOptions } from "./mistral.js";
+import { mistralThinkingDescriptor } from "./mistral-thinking.js";
 import type { OpenAICodexResponsesOptions } from "./openai-codex-responses.js";
 import type { OpenAICompletionsOptions } from "./openai-completions.js";
 import type { OpenAIResponsesOptions } from "./openai-responses.js";
+import {
+	azureOpenAIResponsesThinkingDescriptor,
+	openAICodexResponsesThinkingDescriptor,
+	openAICompletionsThinkingDescriptor,
+	openAIResponsesThinkingDescriptor,
+} from "./openai-thinking.js";
 
 interface LazyProviderModule<
 	TApi extends Api,
@@ -368,60 +382,70 @@ export function registerBuiltInApiProviders(): void {
 		api: "anthropic-messages",
 		stream: streamAnthropic,
 		streamSimple: streamSimpleAnthropic,
+		thinking: anthropicThinkingDescriptor,
 	});
 
 	registerApiProvider({
 		api: "openai-completions",
 		stream: streamOpenAICompletions,
 		streamSimple: streamSimpleOpenAICompletions,
+		thinking: openAICompletionsThinkingDescriptor,
 	});
 
 	registerApiProvider({
 		api: "mistral-conversations",
 		stream: streamMistral,
 		streamSimple: streamSimpleMistral,
+		thinking: mistralThinkingDescriptor,
 	});
 
 	registerApiProvider({
 		api: "openai-responses",
 		stream: streamOpenAIResponses,
 		streamSimple: streamSimpleOpenAIResponses,
+		thinking: openAIResponsesThinkingDescriptor,
 	});
 
 	registerApiProvider({
 		api: "azure-openai-responses",
 		stream: streamAzureOpenAIResponses,
 		streamSimple: streamSimpleAzureOpenAIResponses,
+		thinking: azureOpenAIResponsesThinkingDescriptor,
 	});
 
 	registerApiProvider({
 		api: "openai-codex-responses",
 		stream: streamOpenAICodexResponses,
 		streamSimple: streamSimpleOpenAICodexResponses,
+		thinking: openAICodexResponsesThinkingDescriptor,
 	});
 
 	registerApiProvider({
 		api: "google-generative-ai",
 		stream: streamGoogle,
 		streamSimple: streamSimpleGoogle,
+		thinking: googleThinkingDescriptor,
 	});
 
 	registerApiProvider({
 		api: "google-gemini-cli",
 		stream: streamGoogleGeminiCli,
 		streamSimple: streamSimpleGoogleGeminiCli,
+		thinking: googleGeminiCliThinkingDescriptor,
 	});
 
 	registerApiProvider({
 		api: "google-vertex",
 		stream: streamGoogleVertex,
 		streamSimple: streamSimpleGoogleVertex,
+		thinking: googleVertexThinkingDescriptor,
 	});
 
 	registerApiProvider({
 		api: "bedrock-converse-stream",
 		stream: streamBedrockLazy,
 		streamSimple: streamSimpleBedrockLazy,
+		thinking: bedrockThinkingDescriptor,
 	});
 }
 
