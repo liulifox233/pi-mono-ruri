@@ -1,5 +1,6 @@
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { type Api, getApiProvider, type Model, type ProviderThinkingDescriptor } from "@mariozechner/pi-ai";
+import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import type { SettingsManager, SettingsScope } from "./settings-manager.js";
 import type { SettingDefinition, SettingOption } from "./settings-registry.js";
 
@@ -62,7 +63,7 @@ export function getEffectiveThinkingLevelForModel(
 	if (!model.reasoning) {
 		return "off";
 	}
-	const stored = settingsManager.getDefaultThinkingLevel() ?? "off";
+	const stored = settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
 	return clampThinkingLevel(stored, getAvailableThinkingLevelsForModel(model));
 }
 
@@ -119,13 +120,14 @@ export function createThinkingSettingDefinition(): SettingDefinition {
 		order: 10,
 		label: "Thinking",
 		description: "Reasoning depth for the current model.",
-		storage: { path: "defaultThinkingLevel", defaultValue: "off" },
+		storage: { path: "defaultThinkingLevel", defaultValue: DEFAULT_THINKING_LEVEL },
 		options: (ctx) => getThinkingSettingOptions(ctx.model),
 		getValue: (ctx) =>
-			ctx.runtime?.getThinkingLevel?.() ??
-			(ctx.model
+			ctx.model
 				? (getEffectiveThinkingLevelForModel(ctx.settingsManager, ctx.model) ?? "off")
-				: (ctx.settingsManager.getDefaultThinkingLevel() ?? "off")),
+				: (ctx.settingsManager.getDefaultThinkingLevel() ??
+					ctx.runtime?.getThinkingLevel?.() ??
+					DEFAULT_THINKING_LEVEL),
 		getScopedValue: (ctx, scope) => getScopedThinkingLevelForModel(ctx.settingsManager, ctx.model, scope),
 		apply: (value, ctx, scope) => {
 			ctx.runtime?.setThinkingLevel?.(value as ThinkingLevel, scope);
