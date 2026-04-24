@@ -149,7 +149,7 @@ function sanitizeNamespaceSegment(value: string): string {
 }
 
 const EXTENSION_SETTINGS_ROOT = "extensionSettings";
-const GENERIC_SETTINGS_NAMESPACE_SEGMENTS = new Set([".pi", "extensions", "prompts", "skills", "themes"]);
+const GENERIC_SETTINGS_NAMESPACE_SEGMENTS = new Set([".config", "rpi", "extensions", "prompts", "skills", "themes"]);
 
 function getLastPathSegment(value: string): string | undefined {
 	const segments = value.split(/[\\/]/).filter(Boolean);

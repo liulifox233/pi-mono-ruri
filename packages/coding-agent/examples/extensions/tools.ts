@@ -5,7 +5,7 @@
  * Tool selection persists across session reloads and respects branch navigation.
  *
  * Usage:
- * 1. Copy this file to ~/.pi/agent/extensions/ or your project's .pi/extensions/
+ * 1. Copy this file to ~/.config/rpi/agent/extensions/ or your project's .config/rpi/extensions/
  * 2. Use /tools to open the tool selector
  */
 
