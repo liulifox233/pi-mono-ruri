@@ -121,6 +121,21 @@ When a provider requests a retry delay longer than `maxDelayMs` (e.g., Google's 
 | `shellCommandPrefix` | string | - | Prefix for every bash command (e.g., `"shopt -s expand_aliases"`) |
 | `npmCommand` | string[] | - | Command argv used for npm package lookup/install operations (e.g., `["mise", "exec", "node@20", "--", "npm"]`) |
 
+### Environment Variables
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `env` | object | - | Key-value pairs of environment variables injected at startup. Only sets variables not already present in the environment. Project settings override global settings. |
+
+```json
+{
+  "env": {
+    "NODE_ENV": "development",
+    "PYTHONPATH": "./src"
+  }
+}
+```
+
 ```json
 {
   "npmCommand": ["mise", "exec", "node@20", "--", "npm"]
@@ -220,6 +235,9 @@ See [packages.md](packages.md) for package management details.
     "maxRetries": 3
   },
   "enabledModels": ["claude-*", "gpt-4o"],
+  "env": {
+    "NODE_ENV": "development"
+  },
   "packages": ["pi-skills"]
 }
 ```

@@ -102,6 +102,7 @@ export interface Settings {
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
+	env?: Record<string, string>; // Environment variables to inject at startup
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
@@ -1181,5 +1182,24 @@ export class SettingsManager {
 
 	getCodeBlockIndent(): string {
 		return this.settings.markdown?.codeBlockIndent ?? "  ";
+	}
+
+	/** Get merged environment variables from settings (global + project, project overrides) */
+	getEnv(): Record<string, string> {
+		return { ...(this.settings.env ?? {}) };
+	}
+
+	/**
+	 * Apply environment variables from settings to process.env.
+	 * Only sets variables that are not already set in the environment.
+	 */
+	applyEnv(): void {
+		const envVars = this.settings.env;
+		if (!envVars) return;
+		for (const [key, value] of Object.entries(envVars)) {
+			if (!(key in process.env)) {
+				process.env[key] = value;
+			}
+		}
 	}
 }
