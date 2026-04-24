@@ -6,6 +6,8 @@ import type {
 	ImageContent,
 	Message,
 	Model,
+	ProviderThinkingDescriptor,
+	SelectableThinkingLevel,
 	SimpleStreamOptions,
 	StreamFunction,
 	StreamOptions,
@@ -32,6 +34,13 @@ const DEFAULT_USAGE: Usage = {
 	cacheWrite: 0,
 	totalTokens: 0,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+const FAUX_THINKING_LEVELS: SelectableThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+const fauxThinkingDescriptor: ProviderThinkingDescriptor<string> = {
+	getOptions: () => FAUX_THINKING_LEVELS.map((level) => ({ level })),
+	toProviderValue: (value) => (value === "off" ? undefined : value),
 };
 
 export interface FauxModelDefinition {
@@ -467,7 +476,7 @@ export function registerFauxProvider(options: RegisterFauxProviderOptions = {}):
 	const streamSimple: StreamFunction<string, SimpleStreamOptions> = (streamModel, context, streamOptions) =>
 		stream(streamModel, context, streamOptions);
 
-	registerApiProvider({ api, stream, streamSimple }, sourceId);
+	registerApiProvider({ api, stream, streamSimple, thinking: fauxThinkingDescriptor }, sourceId);
 
 	function getModel(): Model<string>;
 	function getModel(requestedModelId: string): Model<string> | undefined;

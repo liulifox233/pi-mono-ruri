@@ -122,9 +122,10 @@ export function createThinkingSettingDefinition(): SettingDefinition {
 		storage: { path: "defaultThinkingLevel", defaultValue: "off" },
 		options: (ctx) => getThinkingSettingOptions(ctx.model),
 		getValue: (ctx) =>
-			ctx.model
+			ctx.runtime?.getThinkingLevel?.() ??
+			(ctx.model
 				? (getEffectiveThinkingLevelForModel(ctx.settingsManager, ctx.model) ?? "off")
-				: (ctx.settingsManager.getDefaultThinkingLevel() ?? "off"),
+				: (ctx.settingsManager.getDefaultThinkingLevel() ?? "off")),
 		getScopedValue: (ctx, scope) => getScopedThinkingLevelForModel(ctx.settingsManager, ctx.model, scope),
 		apply: (value, ctx, scope) => {
 			ctx.runtime?.setThinkingLevel?.(value as ThinkingLevel, scope);

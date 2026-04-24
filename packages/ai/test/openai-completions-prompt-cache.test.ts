@@ -132,14 +132,14 @@ describe("openai-completions prompt caching", () => {
 		expect(payload?.prompt_cache_retention).toBeUndefined();
 	});
 
-	it("omits prompt cache fields for non-OpenAI base URLs", async () => {
+	it("sends long prompt cache fields for non-OpenAI base URLs", async () => {
 		const model = createModel({
 			baseUrl: "https://proxy.example.com/v1",
 		});
 		const { payload } = await captureRequest({ cacheRetention: "long", sessionId: "session-proxy" }, model);
 
-		expect(payload?.prompt_cache_key).toBeUndefined();
-		expect(payload?.prompt_cache_retention).toBeUndefined();
+		expect(payload?.prompt_cache_key).toBe("session-proxy");
+		expect(payload?.prompt_cache_retention).toBe("24h");
 	});
 
 	it("uses PI_CACHE_RETENTION for direct OpenAI requests", async () => {

@@ -7,7 +7,7 @@ function getOpenAIModelId(model: Pick<Model<Api>, "id">): string {
 
 function supportsOpenAIXhighModel(model: Pick<Model<Api>, "id">): boolean {
 	const id = getOpenAIModelId(model);
-	return id.startsWith("gpt-5.2") || id.startsWith("gpt-5.3") || id.startsWith("gpt-5.4");
+	return id.startsWith("gpt-5.2") || id.startsWith("gpt-5.3") || id.startsWith("gpt-5.4") || id.startsWith("gpt-5.5");
 }
 
 function mapThinkingLevelToOpenAIReasoning(
