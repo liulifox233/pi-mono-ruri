@@ -756,6 +756,15 @@ export function createBuiltinSettingsRegistry(): SettingsRegistry {
 			storage: { path: "collapseChangelog", defaultValue: false, scopes: ["global"] },
 		},
 		{
+			id: "disableUpdateChecks",
+			type: "toggle",
+			section: "appearance",
+			order: 35,
+			label: "Disable update checks",
+			description: "Skip version check and package update check on startup.",
+			storage: { path: "disableUpdateChecks", defaultValue: false, scopes: ["global"] },
+		},
+		{
 			id: "enableInstallTelemetry",
 			section: "appearance",
 			order: 40,
