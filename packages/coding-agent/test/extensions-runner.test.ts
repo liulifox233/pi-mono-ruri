@@ -326,7 +326,7 @@ describe("ExtensionRunner", () => {
 
 			await runner.emit({ type: "session_start", reason: "startup" });
 
-			expect((globalThis as { __runnerThinkingObserved?: unknown }).__runnerThinkingObserved).toBe("off");
+			expect((globalThis as { __runnerThinkingObserved?: unknown }).__runnerThinkingObserved).toBe("high");
 			expect(result.extensions[0]?.settingsDefinitions[0]?.id).toBe("demoToggle");
 		});
 
