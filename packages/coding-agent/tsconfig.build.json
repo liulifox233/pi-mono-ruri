@@ -2,7 +2,15 @@
 	"extends": "../../tsconfig.base.json",
 	"compilerOptions": {
 		"outDir": "./dist",
-		"rootDir": "./src"
+		"rootDir": "./src",
+		"paths": {
+			"*": ["./*"],
+			"@mariozechner/pi-agent-core": ["../agent/dist/index.d.ts"],
+			"@mariozechner/pi-ai": ["../ai/dist/index.d.ts"],
+			"@mariozechner/pi-ai/bedrock-provider": ["../ai/dist/bedrock-provider.d.ts"],
+			"@mariozechner/pi-ai/oauth": ["../ai/dist/oauth.d.ts"],
+			"@mariozechner/pi-tui": ["../tui/dist/index.d.ts"]
+		}
 	},
 	"include": ["src/**/*.ts"],
 	"exclude": ["node_modules", "dist", "**/*.d.ts", "src/**/*.d.ts"]
