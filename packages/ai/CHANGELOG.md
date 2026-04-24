@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added model capability metadata and stream option support for provider-native built-in web search.
 - Added hosted provider-native tools to the shared tool model and Responses/Anthropic tool conversion, including OpenAI Responses hosted activity parsing.
 - Added provider-owned thinking descriptors so each API can declare supported canonical thinking levels and map them to provider wire values.
 

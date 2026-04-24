@@ -1391,6 +1391,8 @@ export interface ProviderModelConfig {
 	headers?: Record<string, string>;
 	/** OpenAI compatibility settings. */
 	compat?: Model<Api>["compat"];
+	/** Provider/model capabilities surfaced to settings and runtime. */
+	capabilities?: Model<Api>["capabilities"];
 }
 
 /** Extension factory function type. Supports both sync and async initialization. */

@@ -76,6 +76,7 @@ export interface Settings {
 	compaction?: CompactionSettings;
 	branchSummary?: BranchSummarySettings;
 	retry?: RetrySettings;
+	builtinWebSearch?: boolean;
 	hideThinkingBlock?: boolean;
 	shellPath?: string; // Custom shell path (e.g., for Cygwin users on Windows)
 	quietStartup?: boolean;
@@ -838,6 +839,16 @@ export class SettingsManager {
 			baseDelayMs: this.settings.retry?.baseDelayMs ?? 2000,
 			maxDelayMs: this.settings.retry?.maxDelayMs ?? 60000,
 		};
+	}
+
+	getBuiltinWebSearch(): boolean {
+		return this.settings.builtinWebSearch ?? false;
+	}
+
+	setBuiltinWebSearch(enabled: boolean): void {
+		this.globalSettings.builtinWebSearch = enabled;
+		this.markModified("builtinWebSearch");
+		this.save();
 	}
 
 	getHideThinkingBlock(): boolean {

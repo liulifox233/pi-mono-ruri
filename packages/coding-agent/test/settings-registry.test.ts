@@ -345,6 +345,27 @@ describe("SettingsRegistry", () => {
 		expect(setThinkingLevel).toHaveBeenCalledWith("medium", "project");
 	});
 
+	it("shows built-in web search only for capable models", () => {
+		const registry = createBuiltinSettingsRegistry();
+		const settingsManager = SettingsManager.inMemory();
+		const capableModel = {
+			...openAi54Model,
+			capabilities: { builtinWebSearch: true },
+		} satisfies Model<"openai-responses">;
+
+		const idsForModel = (model: Model<Api>) =>
+			registry
+				.resolve({ settingsManager, model }, "global")
+				.flatMap((section) => section.items.map((item) => item.id));
+
+		expect(idsForModel(openAi54Model)).not.toContain("builtinWebSearch");
+		expect(idsForModel(capableModel)).toContain("builtinWebSearch");
+
+		registry.apply("builtinWebSearch", true, "global", { settingsManager, model: capableModel });
+
+		expect(settingsManager.getBuiltinWebSearch()).toBe(true);
+	});
+
 	it("stores default extension settings outside the top-level extensions array", () => {
 		const registry = new SettingsRegistry();
 		const settingsManager = SettingsManager.inMemory({ extensions: ["/demo/alpha.ts"] });

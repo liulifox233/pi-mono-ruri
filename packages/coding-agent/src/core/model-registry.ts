@@ -132,6 +132,10 @@ const ProviderCompatSchema = Type.Union([
 	AnthropicMessagesCompatSchema,
 ]);
 
+const ModelCapabilitiesSchema = Type.Object({
+	builtinWebSearch: Type.Optional(Type.Boolean()),
+});
+
 // Schema for custom model definition
 // Most fields are optional with sensible defaults for local models (Ollama, LM Studio, etc.)
 const ModelDefinitionSchema = Type.Object({
@@ -153,6 +157,7 @@ const ModelDefinitionSchema = Type.Object({
 	maxTokens: Type.Optional(Type.Number()),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	compat: Type.Optional(ProviderCompatSchema),
+	capabilities: Type.Optional(ModelCapabilitiesSchema),
 });
 
 // Schema for per-model overrides (all fields optional, merged with built-in model)
@@ -585,6 +590,7 @@ export class ModelRegistry {
 					maxTokens: modelDef.maxTokens ?? 16384,
 					headers: undefined,
 					compat,
+					capabilities: modelDef.capabilities,
 				} as Model<Api>);
 			}
 		}
@@ -847,6 +853,7 @@ export class ModelRegistry {
 					maxTokens: modelDef.maxTokens,
 					headers: undefined,
 					compat: modelDef.compat,
+					capabilities: modelDef.capabilities,
 				} as Model<Api>);
 			}
 
@@ -895,5 +902,6 @@ export interface ProviderConfigInput {
 		maxTokens: number;
 		headers?: Record<string, string>;
 		compat?: Model<Api>["compat"];
+		capabilities?: Model<Api>["capabilities"];
 	}>;
 }

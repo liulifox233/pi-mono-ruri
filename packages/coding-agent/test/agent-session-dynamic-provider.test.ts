@@ -114,4 +114,40 @@ describe("AgentSession dynamic provider registration", () => {
 
 		session.dispose();
 	});
+
+	it("passes built-in web search setting to provider streams", async () => {
+		const session = await createSession([
+			(pi) => {
+				pi.registerProvider("anthropic", {
+					baseUrl: "http://localhost:8080/search",
+					models: [
+						{
+							id: "claude-sonnet-4-5",
+							name: "Claude Sonnet 4.5",
+							api: "anthropic-messages",
+							reasoning: true,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 200000,
+							maxTokens: 32000,
+							capabilities: { builtinWebSearch: true },
+						},
+					],
+				});
+			},
+		]);
+		session.settingsManager.setBuiltinWebSearch(true);
+		session.agent.builtinWebSearch = true;
+
+		let builtinWebSearch: boolean | undefined;
+		session.agent.streamFn = async (_model, _context, options) => {
+			builtinWebSearch = options?.builtinWebSearch;
+			throw new Error("stop");
+		};
+
+		await session.prompt("hello");
+
+		expect(builtinWebSearch).toBe(true);
+		session.dispose();
+	});
 });

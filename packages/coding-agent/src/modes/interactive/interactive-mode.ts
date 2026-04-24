@@ -11,6 +11,7 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import {
 	type AssistantMessage,
 	getProviders,
+	type HostedToolActivity,
 	type ImageContent,
 	type Message,
 	type Model,
@@ -47,6 +48,7 @@ import {
 	visibleWidth,
 } from "@mariozechner/pi-tui";
 import { spawn, spawnSync } from "child_process";
+import { Type } from "typebox";
 import {
 	APP_NAME,
 	APP_TITLE,
@@ -68,6 +70,7 @@ import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
+	ToolDefinition,
 } from "../../core/extensions/index.js";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.js";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.js";
@@ -137,6 +140,62 @@ import {
 interface Expandable {
 	setExpanded(expanded: boolean): void;
 }
+
+function getHostedWebSearchQuery(args: Record<string, unknown>): string | undefined {
+	const directKeys = ["query", "keywords", "keyword", "q"];
+	for (const key of directKeys) {
+		const value = args[key];
+		if (typeof value === "string" && value.trim().length > 0) {
+			return value.trim();
+		}
+	}
+
+	const input = args.input;
+	if (typeof input !== "object" || input === null) {
+		return undefined;
+	}
+
+	const inputRecord = input as Record<string, unknown>;
+	for (const key of directKeys) {
+		const value = inputRecord[key];
+		if (typeof value === "string" && value.trim().length > 0) {
+			return value.trim();
+		}
+	}
+
+	return undefined;
+}
+
+function isHostedWebSearchActivity(activity: HostedToolActivity): boolean {
+	if (activity.name === "web_search" || activity.name === "web_search_tool_result") {
+		return true;
+	}
+
+	const raw = activity.rawItem;
+	return typeof raw === "object" && raw !== null && "type" in raw && raw.type === "web_search_tool_result";
+}
+
+const HOSTED_WEB_SEARCH_TOOL_DEFINITION: ToolDefinition = {
+	name: "web_search",
+	label: "web_search",
+	description: "Provider-native web search",
+	parameters: Type.Object({}, { additionalProperties: true }),
+	async execute() {
+		return {
+			content: [{ type: "text", text: "Hosted web search is executed by the provider." }],
+			details: {},
+		};
+	},
+	renderCall(args, toolTheme) {
+		const query = getHostedWebSearchQuery((args as Record<string, unknown>) ?? {});
+		const summary = query ? `Searching web for ${query}` : "Searching web";
+		return new Text(
+			`${toolTheme.fg("toolTitle", toolTheme.bold("web_search"))}\n${toolTheme.fg("toolOutput", summary)}`,
+			0,
+			0,
+		);
+	},
+};
 
 function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
@@ -2618,8 +2677,9 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/login") {
-				this.showOAuthSelector("login");
+			if (text === "/login" || text.startsWith("/login ")) {
+				const providerId = text.startsWith("/login ") ? text.slice(7).trim() : undefined;
+				await this.handleLoginCommand(providerId);
 				this.editor.setText("");
 				return;
 			}
@@ -2728,6 +2788,78 @@ export class InteractiveMode {
 		});
 	}
 
+	private getHostedActivityResultText(activity: HostedToolActivity): string {
+		if (isHostedWebSearchActivity(activity)) {
+			const query = getHostedWebSearchQuery(activity.arguments);
+			return query ? `Searching web for ${query}` : "Web search completed";
+		}
+		const content = activity.arguments.content ?? activity.rawItem ?? activity.summary;
+		if (typeof content === "string") return content;
+		return JSON.stringify(content, null, 2);
+	}
+
+	private isHostedActivityComplete(activity: HostedToolActivity): boolean {
+		if (activity.status === "completed") return true;
+		const raw = activity.rawItem;
+		return (
+			typeof raw === "object" &&
+			raw !== null &&
+			"type" in raw &&
+			typeof raw.type === "string" &&
+			raw.type.endsWith("_tool_result")
+		);
+	}
+
+	private insertChatChildBefore(component: Component, anchor: Component | undefined): void {
+		if (!anchor) {
+			this.chatContainer.addChild(component);
+			return;
+		}
+
+		const anchorIndex = this.chatContainer.children.indexOf(anchor);
+		if (anchorIndex === -1) {
+			this.chatContainer.addChild(component);
+			return;
+		}
+
+		this.chatContainer.children.splice(anchorIndex, 0, component);
+	}
+
+	private renderHostedToolActivity(activity: HostedToolActivity, anchor?: Component): void {
+		let component = this.pendingTools.get(activity.id);
+		const isWebSearch = isHostedWebSearchActivity(activity);
+		if (!component) {
+			component = new ToolExecutionComponent(
+				activity.name,
+				activity.id,
+				activity.arguments,
+				{
+					showImages: this.settingsManager.getShowImages(),
+					imageWidthCells: this.settingsManager.getImageWidthCells(),
+				},
+				isWebSearch ? HOSTED_WEB_SEARCH_TOOL_DEFINITION : undefined,
+				this.ui,
+				this.sessionManager.getCwd(),
+			);
+			component.setExpanded(this.toolOutputExpanded);
+			this.insertChatChildBefore(component, anchor);
+			this.pendingTools.set(activity.id, component);
+		} else if (!isWebSearch || getHostedWebSearchQuery(activity.arguments)) {
+			component.updateArgs(activity.arguments);
+		}
+
+		component.markExecutionStarted();
+		component.setArgsComplete();
+
+		if (this.isHostedActivityComplete(activity)) {
+			component.updateResult({
+				content: [{ type: "text", text: this.getHostedActivityResultText(activity) }],
+				isError: false,
+				details: activity.rawItem,
+			});
+		}
+	}
+
 	private async handleEvent(event: AgentSessionEvent): Promise<void> {
 		if (!this.isInitialized) {
 			await this.init();
@@ -2825,6 +2957,8 @@ export class InteractiveMode {
 									component.updateArgs(content.arguments);
 								}
 							}
+						} else if (content.type === "hostedToolActivity") {
+							this.renderHostedToolActivity(content, this.streamingComponent);
 						}
 					}
 					this.ui.requestRender();
@@ -3209,7 +3343,9 @@ export class InteractiveMode {
 		for (const message of sessionContext.messages) {
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
+				const assistantInsertIndex = this.chatContainer.children.length;
 				this.addMessageToChat(message);
+				const assistantComponent = this.chatContainer.children[assistantInsertIndex];
 				// Render tool call components
 				for (const content of message.content) {
 					if (content.type === "toolCall") {
@@ -3243,6 +3379,8 @@ export class InteractiveMode {
 						} else {
 							this.pendingTools.set(content.id, component);
 						}
+					} else if (content.type === "hostedToolActivity") {
+						this.renderHostedToolActivity(content, assistantComponent);
 					}
 				}
 			} else if (message.role === "toolResult") {
@@ -4410,6 +4548,34 @@ export class InteractiveMode {
 			);
 			return { component: selector, focus: selector };
 		});
+	}
+
+	private async handleLoginCommand(providerId?: string): Promise<void> {
+		if (!providerId) {
+			this.showOAuthSelector("login");
+			return;
+		}
+
+		const providerOptions = this.getLoginProviderOptions();
+		const providerOption = providerOptions.find((provider) => provider.id === providerId);
+		if (!providerOption) {
+			this.showError(
+				`Provider "${providerId}" is not available for /login. Load its extension first if it is a plugin provider.`,
+			);
+			return;
+		}
+
+		if (providerOption.authType === "oauth") {
+			await this.showLoginDialog(providerOption.id, providerOption.name);
+			return;
+		}
+
+		if (providerOption.id === BEDROCK_PROVIDER_ID) {
+			this.showBedrockSetupDialog(providerOption.id, providerOption.name);
+			return;
+		}
+
+		await this.showApiKeyLoginDialog(providerOption.id, providerOption.name);
 	}
 
 	private async showOAuthSelector(mode: "login" | "logout"): Promise<void> {

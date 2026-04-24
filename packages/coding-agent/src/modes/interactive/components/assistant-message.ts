@@ -70,6 +70,10 @@ export class AssistantMessageComponent extends Container {
 		return lines;
 	}
 
+	private hasToolLikeContent(message: AssistantMessage): boolean {
+		return message.content.some((c) => c.type === "toolCall" || c.type === "hostedToolActivity");
+	}
+
 	updateContent(message: AssistantMessage): void {
 		this.lastMessage = message;
 
@@ -122,10 +126,10 @@ export class AssistantMessageComponent extends Container {
 		}
 
 		// Check if aborted - show after partial content
-		// But only if there are no tool calls (tool execution components will show the error)
-		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
-		this.hasToolCalls = hasToolCalls;
-		if (!hasToolCalls) {
+		// But only if there are no tool-like blocks (tool execution components will show the error)
+		const hasToolLikeContent = this.hasToolLikeContent(message);
+		this.hasToolCalls = hasToolLikeContent;
+		if (!hasToolLikeContent) {
 			if (message.stopReason === "aborted") {
 				const abortMessage =
 					message.errorMessage && message.errorMessage !== "Request was aborted"

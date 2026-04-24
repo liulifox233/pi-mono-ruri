@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added a model-gated built-in web search setting.
 - Added `pi.registerHostedTool()` for extension-provided provider-native tools and included hosted tools in active tool selection and provider request hooks.
 - Added provider-driven thinking settings so `/settings` exposes only the thinking levels supported by the current model.
 

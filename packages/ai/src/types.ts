@@ -130,6 +130,8 @@ export interface StreamOptions {
 	 * For example, Anthropic uses `user_id` for abuse tracking and rate limiting.
 	 */
 	metadata?: Record<string, unknown>;
+	/** Enable provider-native web search for providers/models that support it. */
+	builtinWebSearch?: boolean;
 }
 
 export type ProviderStreamOptions = StreamOptions & Record<string, unknown>;
@@ -495,4 +497,7 @@ export interface Model<TApi extends Api> {
 			: TApi extends "anthropic-messages"
 				? AnthropicMessagesCompat
 				: never;
+	capabilities?: {
+		builtinWebSearch?: boolean;
+	};
 }

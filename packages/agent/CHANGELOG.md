@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added forwarding for provider-native built-in web search stream options.
 - Added hosted tool-call handling so provider-native tool activity remains in assistant messages without local execution.
 
 ## [0.70.0] - 2026-04-23

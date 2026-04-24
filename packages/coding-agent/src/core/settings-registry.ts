@@ -48,6 +48,7 @@ export interface SettingsRuntimeActions {
 	setAutocompleteMaxVisible?: (value: number, scope: SettingsScope) => void;
 	setClearOnShrink?: (value: boolean, scope: SettingsScope) => void;
 	setShowTerminalProgress?: (value: boolean, scope: SettingsScope) => void;
+	setBuiltinWebSearch?: (value: boolean, scope: SettingsScope) => void;
 }
 
 export interface SettingsRuntimeContext {
@@ -645,10 +646,26 @@ export function createBuiltinSettingsRegistry(): SettingsRegistry {
 
 	register(createThinkingSettingDefinition());
 	register({
+		id: "builtinWebSearch",
+		type: "toggle",
+		section: "model",
+		order: 20,
+		label: "Built-in web search",
+		description: "Enable provider-native web search for supported models.",
+		storage: { path: "builtinWebSearch", defaultValue: false },
+		visible: (ctx) => ctx.model?.capabilities?.builtinWebSearch === true,
+		getValue: (ctx) => ctx.settingsManager.getBuiltinWebSearch(),
+		apply: (value, ctx, scope) => {
+			ctx.runtime?.setBuiltinWebSearch?.(value === true, scope);
+			return undefined;
+		},
+	});
+
+	register({
 		id: "transport",
 		type: "select",
 		section: "model",
-		order: 20,
+		order: 30,
 		label: "Transport",
 		description: "Preferred transport for providers that support multiple transports.",
 		storage: { path: "transport", defaultValue: "sse" },
